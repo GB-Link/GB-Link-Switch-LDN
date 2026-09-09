@@ -84,6 +84,103 @@ if (args.Length >= 2 && args[0] == "--party-offer")
     if (slots[slot] == null) throw new ArgumentException($"Slot {slot + 1} is empty");
     SaveParty(slots, slot); PrintParty(slots, slot); return;
 }
+if (args.Length >= 2 && args[0] is "--gblink" or "--leader")
+{
+    // --gblink <port>: enter wireless mode and print status/telemetry (no beacons); --leader <port>: M1 fake Leader.
+    string leaderName = "PC"; byte activity = 4; bool started = false, accept = true; double seconds = args[0] == "--gblink" ? 8 : 600;
+    for (int i = 2; i + 1 < args.Length; i++)
+    {
+        if (args[i] == "--name") leaderName = args[i + 1];
+        else if (args[i] == "--activity") activity = Convert.ToByte(args[i + 1], 16);
+        else if (args[i] == "--started") started = args[i + 1] == "1";
+        else if (args[i] == "--seconds") seconds = double.Parse(args[i + 1]);
+        else if (args[i] == "--accept") accept = args[i + 1] == "1";
+    }
+    using var cancellation = new CancellationTokenSource();
+    Console.CancelKeyPress += (_, e) => { e.Cancel = true; cancellation.Cancel(); };
+    using var gblink = new GbLinkDevice(args[1]);
+    new LeaderBridge(gblink, Console.WriteLine).Run(leaderName, activity, started, args[0] == "--leader", accept, seconds, cancellation.Token);
+    return;
+}
+if (args.Length >= 3 && args[0] == "--bridge")
+{
+    // --bridge <ldn port> <gblink port> [--name LEADER]: real GBA on the GB-Link joins the Switch's Leader room.
+    string? leaderName = null;
+    for (int i = 3; i + 1 < args.Length; i++) if (args[i] == "--name") leaderName = args[i + 1];
+    using var cancellation = new CancellationTokenSource();
+    Console.CancelKeyPress += (_, e) => { e.Cancel = true; cancellation.Cancel(); };
+    string path = Path.Combine(root, "local/runs", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + "-bridge");
+    Console.WriteLine($"run: {path}");
+    new SwitchBridge(Console.WriteLine).Run(args[1], args[2], leaderName, path, cancellation.Token);
+    return;
+}
+if (args.Length >= 2 && args[0] == "--replay-bridge")
+{
+    // Offline check of the relay mappings against a captured session: every host WT frame must map to a HOST_SEND
+    // payload of the adapter send length, and every child payload must re-wrap into the captured WT frame.
+    string? ssidHex = null; PiaCrypto? crypto = null; int hostFrames = 0, childFrames = 0, mismatches = 0; var lengths = new SortedDictionary<int, int>();
+    foreach (string line in File.ReadLines(args[1]))
+    {
+        using var doc = JsonDocument.Parse(line); var r = doc.RootElement;
+        if (r.GetProperty("rec").GetString() == "meta") { ssidHex = r.GetProperty("ssid_hex").GetString(); crypto = new PiaCrypto(Convert.FromHexString(ssidHex!)); continue; }
+        if (crypto == null) continue;
+        string dir = r.GetProperty("dir").GetString()!; string src = r.GetProperty("src").GetString()!.Split(':')[0]; var data = Convert.FromHexString(r.GetProperty("hex").GetString()!);
+        byte[] plain; try { plain = crypto.Decrypt(data, src); } catch (Exception) { continue; }
+        plain = plain[..(plain.Length - (data[5] >> 4) - data[12])]; byte[] app = (data[5] & 1) != 0 ? crypto.Decompress(plain) : plain;
+        foreach (var m in PiaCrypto.Messages(app))
+        {
+            if (m.Protocol != 10) continue; var q = m.Payload; if (q.Length < 8 || (q[0] & 1) == 0) continue;
+            var inner = q[8..Math.Min(q.Length, 8 + Bin.B16(q, 1))]; if (inner.Length < 12 || inner[0] != 0x57 || inner[1] != 0x54) continue;
+            if (dir == "in")
+            {
+                var payload = RelayLink.HostPayloadOf(inner); hostFrames++; lengths[payload.Length] = lengths.GetValueOrDefault(payload.Length) + 1;
+                var frame = Rfu1.HostSendFrame(payload);
+                if ((Bin.B32(frame, 8) & 0x7F) != payload.Length || !frame.AsSpan(12, payload.Length).SequenceEqual(payload)) mismatches++;
+            }
+            else
+            {
+                int blen = inner[9]; var payload = inner[12..Math.Min(inner.Length, 12 + blen)]; childFrames++;
+                var rewrapped = Rfu.Wrap(payload, Bin.U32(inner, 4));
+                if (!rewrapped.AsSpan().SequenceEqual(inner)) { mismatches++; if (mismatches <= 5) Console.WriteLine($"child mismatch: captured {Convert.ToHexString(inner)} rewrapped {Convert.ToHexString(rewrapped)}"); }
+            }
+        }
+    }
+    Console.WriteLine($"host WT frames: {hostFrames} (adapter lengths: {string.Join(", ", lengths.Select(k => $"{k.Key}B x{k.Value}"))}); child WT frames: {childFrames}; mismatches: {mismatches}");
+    return;
+}
+if (args.Length >= 2 && args[0] == "--decode-pia")
+{
+    // Offline decoder for a session's pia.jsonl: decrypts every datagram with the real PiaCrypto and prints
+    // the reliable-stream frames ("W" frames are the emulated wireless-adapter traffic).
+    int limit = args.Length >= 3 ? int.Parse(args[2]) : int.MaxValue; string? ssidHex = null; PiaCrypto? crypto = null; int shown = 0;
+    var kinds = new Dictionary<string, int>();
+    foreach (string line in File.ReadLines(args[1]))
+    {
+        using var doc = JsonDocument.Parse(line); var r = doc.RootElement;
+        if (r.GetProperty("rec").GetString() == "meta") { ssidHex = r.GetProperty("ssid_hex").GetString(); crypto = new PiaCrypto(Convert.FromHexString(ssidHex!)); continue; }
+        if (crypto == null || r.GetProperty("rec").GetString() != "pkt") continue;
+        string dir = r.GetProperty("dir").GetString()!; double t = r.GetProperty("t").GetDouble();
+        string src = r.GetProperty("src").GetString()!.Split(':')[0]; var data = Convert.FromHexString(r.GetProperty("hex").GetString()!);
+        byte[] plain;
+        try { plain = crypto.Decrypt(data, src); } catch (Exception e) { Console.WriteLine($"{t,8:F3} {dir,-3} decrypt failed: {e.GetType().Name}"); continue; }
+        int padding = data[5] >> 4, footer = data[12]; plain = plain[..(plain.Length - padding - footer)];
+        byte[] app = (data[5] & 1) != 0 ? crypto.Decompress(plain) : plain;
+        foreach (var m in PiaCrypto.Messages(app))
+        {
+            if (m.Protocol != 10) { kinds[$"pia{m.Protocol}"] = kinds.GetValueOrDefault($"pia{m.Protocol}") + 1; continue; }
+            var q = m.Payload; if (q.Length < 8) continue;
+            int flags = q[0], len = Bin.B16(q, 1), seq = Bin.B16(q, 3), low = Bin.B16(q, 5); var inner = q[8..Math.Min(q.Length, 8 + len)];
+            string kind = (flags & 1) == 0 ? "ACK" : inner.Length >= 2 && inner[0] == 0x57 ? "W" + (char)inner[1] : $"data{(inner.Length >= 2 ? Convert.ToHexString(inner[..2]) : "")}";
+            kinds[kind] = kinds.GetValueOrDefault(kind) + 1;
+            if (shown++ >= limit) continue;
+            if (kind.StartsWith("W") && inner.Length >= 12)
+                Console.WriteLine($"{t,8:F3} {dir,-3} seq={seq:x4} {kind} len={Bin.U16(inner, 2)} time={Bin.U32(inner, 4):x8} hdr={Convert.ToHexString(inner[8..12])} payload={Convert.ToHexString(inner[12..])}");
+            else Console.WriteLine($"{t,8:F3} {dir,-3} seq={seq:x4} {kind} flags={flags:x2} low={low:x4} {Convert.ToHexString(inner)}");
+        }
+    }
+    Console.WriteLine("frame kinds: " + string.Join(", ", kinds.OrderByDescending(k => k.Value).Select(k => $"{k.Key}={k.Value}")));
+    return;
+}
 if (args.Length >= 2 && args[0] == "--live")
 {
     var (party, offered) = LoadParty();
