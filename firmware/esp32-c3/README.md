@@ -1,24 +1,28 @@
-# ESP32-C3 USB LDN 固件
+# ESP32-C3 USB LDN firmware
 
-独立的 ESP32-C3 实验工程，参考 C6 的 LDN 协议实现，固定 ESP-IDF v6.1。
-默认 4 MB Flash、DIO、80 MHz，通过 C3 原生 USB Serial/JTAG 与 Windows 上位机通信。
-此版本不使用 UART0；开发板的 USB 接口必须连接 C3 的原生 USB，而不是 USB 转 UART 芯片。
+A standalone, experimental ESP32-C3 project modelled on the C6's LDN protocol implementation and pinned to
+ESP-IDF v6.1. Default 4 MB flash, DIO, 80 MHz; it talks to the host through the C3's native USB Serial/JTAG.
+This version does not use UART0: the devkit's USB connector must be wired to the C3's native USB,
+not to a USB-to-UART chip.
 
-## 与 C6 的区别
+## Differences from the C6
 
-- `main/c3_transport.c` 使用 USB Serial/JTAG 驱动收发二进制帧。上位机设置波特率时仅应答，USB 物理速率不受该值影响。
-- `main/ldn_control.c` 单独实现认证帧收发、状态查询和 USB 命令处理。
-- 不包含 C6 的原始帧重定位补丁、硬件描述符偏移或发送跟踪钩子。
-- WPA 回调与 CCMP 密钥接口对应固定的 C3 驱动，并在构建时检查 C3 无线库 SHA-256。
-  该驱动的配对密钥读取接口返回不支持；校验组密钥，并以实际加密认证响应验证配对密钥。
-- `LDN_HELLO` 重置协议会话编号，支持关闭串口后直接重新连接。
-- FreeRTOS 使用 1 ms tick，使主循环的 2 ms 延时有效，避免忙循环。
+- `main/c3_transport.c` sends and receives binary frames with the USB Serial/JTAG driver. When the host
+  sets a baud rate the device only acknowledges; the physical USB rate is unaffected.
+- `main/ldn_control.c` implements authentication frame I/O, status queries and USB command handling on its own.
+- The C6's raw-frame relocation patch, hardware descriptor offsets and transmit trace hooks are not included.
+- The WPA callbacks and the CCMP key interface target the pinned C3 driver, and the build checks the SHA-256
+  of the C3 wireless library. That driver's pairwise-key getter reports "not supported"; the group key is
+  verified by reading it back, and the pairwise key by the actual encrypted authentication response.
+- `LDN_HELLO` resets the protocol session id, so the host can reconnect right after closing the port.
+- FreeRTOS runs a 1 ms tick so the main loop's 2 ms delay is effective and does not busy-loop.
 
-配套上位机按对端声明的发送窗口起点初始化 Pia 接收序号，支持房间重连后的非固定起始序号。
+The matching host initializes the Pia receive sequence from the peer's advertised send-window base,
+which supports a non-fixed starting sequence after rejoining a room.
 
-## 构建与烧录
+## Build and flash
 
-在仓库根目录运行，示例串口号替换为实际 C3 端口：
+Run from the repository root, replacing the example port with the actual C3 port:
 
 ```powershell
 .\firmware\esp32-c3\tools\probe.ps1 -Action identify -Port COM5
@@ -26,20 +30,22 @@
 .\firmware\esp32-c3\tools\probe.ps1 -Action flash -Port COM5
 ```
 
-脚本复用 `firmware/tools/environment.ps1` 激活 SDK，固件源码和构建目录均在本目录。
-烧录前关闭占用该端口的上位机或串口监视器。现有 C# 上位机可直接选择原生 USB 的 COM 端口。
+The script reuses `firmware/tools/environment.ps1` to activate the SDK; the sources and the build directory
+are in this project. Close the host or any serial monitor holding the port before flashing.
+The existing C# host can select the native USB COM port directly.
 
-使用其他烧录工具时选择 ESP32-C3、DIO、80 MHz、4 MB，文件均位于 `build/`：
+With other flashing tools select ESP32-C3, DIO, 80 MHz, 4 MB; the files are in `build/`:
 
-| 地址 | 文件 |
+| Address | File |
 | --- | --- |
 | `0x0` | `bootloader/bootloader.bin` |
 | `0x8000` | `partition_table/partition-table.bin` |
 | `0x10000` | `ldn_c3_bridge.bin` |
 
-## 实板调试
+## Hardware diagnostics
 
-需要 .NET 10 SDK。诊断程序使用现有 C# 协议库，结束时停止设备会话并释放串口。
+Requires the .NET 10 SDK. The diagnostic reuses the C# protocol library and stops the device session and
+releases the port when it exits.
 
 ```powershell
 .\firmware\esp32-c3\tools\diagnose.ps1 -Mode serial -Port COM5
@@ -48,13 +54,19 @@
 .\firmware\esp32-c3\tools\diagnose.ps1 -Mode room -Port COM5
 ```
 
-- `serial`：协议握手、50 次信道切换、非法命令拒绝、恢复及停止。
-- `auth`：额外扫描 FireRed Leader 房间，验证广播、关联、密钥安装、认证响应、challenge、成员列表及 UDP 接口配置。
-- `pia`：额外进行短时 Pia 加密数据收发，验证双向包计数和解密结果，然后断开；不是完整交换测试。
-- `room`：持续运行最多 3 分钟，检查实际进房，记录可靠通信序号和设备状态；可配合 Switch 操作测试交换。通信记录及收到的宝可梦保存在 `local/esp32-c3/runs/`。
+- `serial`: protocol handshake, 50 channel changes, invalid-command rejection, recovery and stop.
+- `auth`: additionally scans for a FireRed Leader room and verifies the advertisement, association,
+  key installation, authentication response, challenge, member list and UDP interface setup.
+- `pia`: additionally runs a short encrypted Pia exchange, verifying the packet counts in both directions
+  and the decryption, then disconnects; this is not a complete trade test.
+- `room`: runs for up to 3 minutes, checks real room entry, and records the reliable-transport sequence
+  numbers and device state; operate the Switch alongside it to test a trade. Captures and received
+  Pokémon are saved in `local/esp32-c3/runs/`.
 
-`auth`、`pia` 和 `room` 需要 Switch 已创建 Leader 房间，并在当前用户 `.switch/prod.keys` 放置有效密钥。
-密钥运行时读取，不嵌入源码或固件。原板备份、房间信息和调试日志应保存在仓库的 `local/esp32-c3/`。
+`auth`, `pia` and `room` require the Switch to be hosting a Leader room and valid keys in the current user's
+`.switch/prod.keys`. Keys are read at run time and never embedded in the sources or the firmware.
+Board backups, room information and debug logs belong in the repository's `local/esp32-c3/`.
 
-已完成实板烧录校验、原生 USB 通信、连续重连、无线关联、LDN 认证、实际进房及一次完整宝可梦交换验证。
-本次完整流程无 Pia 解密失败或串口坏帧；长时间稳定性仍需持续测试。
+Verified on hardware: flashing, native USB communication, repeated reconnection, wireless association,
+LDN authentication, real room entry and one complete Pokémon trade. That run had no Pia decryption
+failures and no corrupt serial frames; long-term stability still needs continued testing.

@@ -36,7 +36,7 @@ public sealed class TradeEngine
     public TradeEngine(byte[]?[] data, int selectedSlot)
     {
         if (data.Length != 6 || selectedSlot is < 0 or > 5 || data[selectedSlot] == null || data.Count(p => p != null) < 2)
-            throw new InvalidDataException("队伍需要至少两只宝可梦，并选择有效槽位。");
+            throw new InvalidDataException("The party needs at least two Pokémon and a valid selected slot.");
         party = data.Select(p => p == null ? new byte[100] : ToWire(p)).ToArray(); offered = selectedSlot;
     }
     public static PK3 Parse(byte[] data)

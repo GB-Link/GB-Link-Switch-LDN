@@ -1,150 +1,231 @@
-# FRLG 交换中心
+# FRLG Trade Center
 
-本项目基于 [tornadus/frlg-ldn-trade](https://github.com/tornadus/frlg-ldn-trade) 移植，
-提供 Windows C# 图形上位机与 ESP32-C6、ESP32-C3 无线桥接固件，两个芯片分别维护独立工程。
+English fork of [easyworld/frlg-ldn-trade-esp32](https://github.com/easyworld/frlg-ldn-trade-esp32),
+itself a port of [tornadus/frlg-ldn-trade](https://github.com/tornadus/frlg-ldn-trade). It provides a
+Windows C# desktop host, a cross-platform console host, and wireless bridge firmware for four ESP32 chips,
+each maintained as an independent project. Beyond the translation, this fork adds the ESP32-S3 and
+original-ESP32 firmware, the console host, and prebuilt images for all four chips.
 
 ![screenshot](./screenshot.png)
 
+*The screenshot shows the original Chinese interface; the fork's interface strings are English.*
+
 https://github.com/user-attachments/assets/484677c5-2db5-4e83-a864-ac67cbc7ce3b
 
-C# 直接通过串口完成设备识别、房间扫描、LDN 认证、Pia/RFU 通信和交易；
-PKHeX.Core 负责 PK3 展示与编辑。固件负责无线关联、会话密钥安装和数据收发。
-房间配置和宝可梦数据在连接时通过串口下发。
-电脑必须在连接期间持续运行上位机。
+The C# host drives everything over the serial port: device identification, room scanning, LDN
+authentication, Pia/RFU communication and the trade itself; PKHeX.Core handles PK3 display and editing.
+The firmware handles wireless association, session key installation and data transfer.
+Room configuration and Pokémon data are sent over the serial port when connecting.
+The PC must keep the host running for the whole connection.
 
 ```mermaid
 flowchart LR
-    Switch["Switch（游戏房间）"] <-->|LDN 无线通信| ESP32["ESP32-C6 / C3（无线桥接固件）"]
-    ESP32 <-->|USB 串口| PC["PC 上位机（协议处理与宝可梦交换）"]
+    Switch["Switch (game room)"] <-->|LDN wireless| ESP32["ESP32-C6 / C3 / S3 / ESP32 (bridge firmware)"]
+    ESP32 <-->|USB serial| PC["PC host (protocol handling and Pokémon trading)"]
 ```
 
-## 目录
+## Supported boards
 
-| 目录 | 内容 |
+| Chip | Project | Link to the PC | Default flash | Status |
+| --- | --- | --- | --- | --- |
+| ESP32-C6 | [`firmware/esp32-c6`](firmware/esp32-c6/README.md) | UART, through the board's USB-to-UART bridge | 16 MB (4/8 MB selectable) | Upstream reference: two real trades, verified joining newly created rooms on different channels. Includes the private raw-TX adapter and TX tracing. Prebuilt image in `firmware/release`. |
+| ESP32-C3 | [`firmware/esp32-c3`](firmware/esp32-c3/README.md) | Native USB Serial/JTAG | 4 MB | Upstream experimental: real room entry and one complete trade. Prebuilt image in `firmware/release`. |
+| ESP32-S3 | [`firmware/esp32-s3`](firmware/esp32-s3/README.md) | Native USB Serial/JTAG | 8 MB | Port of the C3 project. Validated on an M5Stack AtomS3 with staged diagnostics and a complete trade (2026-09-08). Prebuilt image in `firmware/release`. |
+| ESP32 (original) | [`firmware/esp32`](firmware/esp32/README.md) | UART, through the board's USB-to-UART bridge (CP2102 on common devkits) | 4 MB | Port of the S3 project with a UART transport. Validated on an ESP32-D0WD-V3 devkit with staged diagnostics and complete trades (2026-09-08). Prebuilt image in `firmware/release`. |
+
+All four run at 115200 baud after boot and switch to 921600 on request; the two USB Serial/JTAG
+chips accept the baud command without changing their physical rate. Every variant is a **joiner**:
+the Switch creates the room and is the LDN access point, and the ESP32 associates to it. Hosting a
+room from the ESP32 (Leader mode) is not implemented in any firmware or in the host.
+The chips share the serial protocol, so the host only checks the protocol version and capabilities;
+the chip model is shown for information only. Any other microcontroller would have to implement the
+LDN wireless capabilities the protocol requires; a plain serial port is not enough to talk to a Switch.
+
+## Layout
+
+| Directory | Contents |
 | --- | --- |
-| `host/core` | 纯 C# LDN、串口协议、Pia、RFU、交易状态机 |
-| `host/desktop` | C# WPF 界面、PKHeX 编辑、队伍与设置保存 |
-| `host/tests` | .NET 协议测试、离线回放、实板诊断入口 |
-| `firmware/esp32-c6` | [ESP32-C6 固件](firmware/esp32-c6/README.md)，使用 UART，含 C6 专用构建和审计工具 |
-| `firmware/esp32-c3` | [ESP32-C3 独立实验固件](firmware/esp32-c3/README.md)，使用原生 USB Serial/JTAG |
-| `firmware/tools` | 两种芯片共用的 SDK 安装、环境激活与 Windows 无线诊断工具 |
-| `assets/party` | 默认 MEWTWO、DEOXYS；程序不修改这些资源 |
-| `assets/sprites` | 本地宝可梦 PNG 图片，1–386 |
-| `app` | win-x64、依赖框架的单文件 EXE |
-| `local` | 待用队伍、设置、会话日志和接收的 PK3，不应公开 |
+| `host/core` | Pure C# LDN, serial protocol, Pia, RFU and trade state machine |
+| `host/desktop` | C# WPF interface, PKHeX editing, party and settings persistence (Windows only) |
+| `host/tests` | .NET protocol tests, offline replay, board diagnostics and the [console host](host/tests/README.md) |
+| `firmware/esp32-c6` | [ESP32-C6 firmware](firmware/esp32-c6/README.md), UART, with the C6-specific build and audit tools |
+| `firmware/esp32-c3` | [ESP32-C3 experimental firmware](firmware/esp32-c3/README.md), native USB Serial/JTAG |
+| `firmware/esp32-s3` | [ESP32-S3 firmware](firmware/esp32-s3/README.md), native USB Serial/JTAG |
+| `firmware/esp32` | [Original ESP32 firmware](firmware/esp32/README.md), UART |
+| `firmware/release` | [Prebuilt full images](firmware/release/README.md) for all four chips, with checksums |
+| `firmware/tools` | Shared SDK installation and environment scripts (Windows) and a Windows wireless diagnostic tool |
+| `assets/party` | Default MEWTWO and DEOXYS; the programs never modify these files |
+| `assets/sprites` | Local Pokémon PNG images, 1–386 |
+| `app` | win-x64 framework-dependent single-file EXE (build output) |
+| `local` | Standby party, settings, session logs and received PK3 files; do not publish |
 
-## 运行与密钥
+## Running and keys
 
-运行 `app/Frlg.Trade.Desktop.exe`，需要 Windows x64 版 .NET 10 Desktop Runtime。
-默认宝可梦和全部图片已内置，只需复制 EXE 即可运行，无需附带 `assets` 或 `project.json`。
-队伍、设置和会话日志保存在 EXE 同目录的 `local/`，请放在可写目录。
-端口可以在界面选择。
+### Windows desktop app
 
-`prod.keys` 在每次连接时读取，查找顺序固定：
+Run `app/Frlg.Trade.Desktop.exe`; it needs the Windows x64 .NET 10 Desktop Runtime.
+The default Pokémon and all sprites are embedded, so copying the EXE alone is enough; `assets` and
+`project.json` are not needed at run time. The party, settings and session logs are written to
+`local/` next to the EXE, so keep it in a writable directory. The port is selected in the interface.
 
-1. EXE 所在目录，即本项目的 `app/prod.keys`。
-2. 当前用户目录下的 `.switch/prod.keys`。
-3. 都没有时弹出提示，要求放在程序目录；可打开该目录并重试。
+### Console host (Linux, macOS, Windows)
 
-优先位置存在但格式无效时，显示错误，不静默使用另一个文件。
-密钥不加入资源、不复制到发布目录、不写入固件。固件仅接收本轮派生的 CCMP 密钥并保存在 RAM。
+The WPF app is Windows only. Everywhere else, `host/tests` doubles as a console host with the same
+protocol code: `--device <port>` runs the board diagnostic, `--live <port>` runs a complete trade
+session, and the `--party` commands manage the standby party in `local/party.json`, the same file the
+desktop app uses. See [host/tests/README.md](host/tests/README.md).
 
-Switch 创建 FireRed Leader 房间后点击连接；进入房间、选择和确认交易仍在 Switch 上操作。
-兼容性由串口协议版本和能力决定，设备型号仅在提示信息中显示。
-其他单片机需要实现协议所要求的 LDN 无线能力，普通串口本身不足以连接 Switch。
+### prod.keys
 
-左右各 3 行 2 列。左侧未连接时为空，收到完整有效队伍后显示，断开后清空。
-右侧首次运行提供两只默认宝可梦，之后恢复保存的待用队伍；可拖入 80/100 字节 PK3、
-点击空槽导入、选择提供对象，右键查看、导出或清空。黄色边框表示提供槽位。
-本轮队伍至少包含两只；每次连接完成一笔交易，再由 Switch 取消、离房。
+`prod.keys` is read on every connection, in a fixed order:
 
-连接过程中可取消。串口异常、无线超时或后台任务结束都会恢复连接按钮并清空左侧。
-主动断开立即终止本轮通信，不会在交易过程中自动重连；正常结束请在 Switch 上取消和离房。
+1. The directory containing the executable, i.e. `app/prod.keys` for the desktop app or the build
+   output directory for the console host.
+2. `.switch/prod.keys` in the current user's home directory.
+3. If neither exists, the desktop app prompts for the file to be placed in the program directory,
+   with a button to open that directory and retry.
 
-## 初训家与队伍快照
+If the higher-priority file exists but is invalid, an error is shown; the other file is not used
+silently. Keys are never embedded as resources, copied to the publish directory, or written to the
+firmware. The firmware only receives the CCMP key derived for the current session and keeps it in RAM.
+The host needs `master_key_00` or `master_key_12` plus `aes_kek_generation_source` and
+`aes_key_generation_source`; `title.keys` is not used.
 
-勾选“自动同步对方初训家”或点击同步按钮，按 TID、SID、名称、性别去重。
-只有一种身份时直接应用；多种时由用户选择，取消不修改。
-覆盖右侧全部非空槽的这四个字段并重算校验，不修改 PID、个体值等其他字段。
-无法用目标 PK3 语言表示的名字会使整批修改失败，保留原队伍。
-改变 TID/SID 可能改变第三世代闪光判定；此功能不是合法性修复。
+### Trading
 
-连接开始时建立本轮快照。连接中的导入、提供对象选择和初训家同步仅修改待用队伍，
-标记“下次连接生效”，不会替换本轮已经发给对方的数据。
-待用队伍保存到 `local/party.json`。每笔接收结果在提交时先保存到
-`local/runs/<时间戳>-native/received.pk3`，然后通知界面；有待用修改时不会用结果覆盖待用槽。
+Create a FireRed Leader room on the Switch, then connect. Entering the room, choosing the Pokémon and
+confirming the trade are still done on the Switch.
 
-## 构建与烧写
+In the desktop app, the left and right panels each show six slots in three rows of two. The left side
+is empty until connected, shows the partner's party once a complete valid party has arrived, and is
+cleared on disconnect. The right side offers the two default Pokémon on first run and restores the saved
+standby party afterwards. You can drag in 80- or 100-byte PK3 files, click an empty slot to import,
+choose which Pokémon to offer, and right-click a slot to view, export or clear it. A yellow border marks
+the offered slot. The party must contain at least two Pokémon. Each connection completes one trade,
+after which the Switch cancels and leaves the room.
 
-上位机只需要 .NET 10 SDK 和 NuGet 网络访问：
+Connecting can be cancelled. A serial error, a wireless timeout, or the background task ending restores
+the Connect button and clears the left side. Disconnecting deliberately ends the session immediately;
+there is no automatic reconnection in the middle of a trade. To finish normally, cancel and leave the
+room on the Switch.
+
+## Trainer sync and party snapshots
+
+Tick "auto-sync the partner's trainer" or press the sync button. Identities are deduplicated by TID,
+SID, name and gender. A single identity is applied directly; with several, the user chooses, and
+cancelling changes nothing. Syncing overwrites those four fields on every non-empty slot on the right
+and recomputes the checksums; it does not touch the PID, IVs or any other field. A name that cannot be
+represented in the target PK3's language makes the whole batch fail and leaves the party unchanged.
+Changing the TID/SID can change the Generation 3 shiny determination; this feature is not a legality fix.
+
+A snapshot of the party is taken when a connection starts. Imports, offer-slot changes and trainer sync
+made during a connection only modify the standby party, are marked "takes effect on the next connection",
+and never replace data already sent to the partner. The standby party is saved to `local/party.json`.
+Each received Pokémon is saved at commit time to `local/runs/<timestamp>-native/received.pk3` before
+the interface is notified; when standby edits are pending, the result does not overwrite the standby slot.
+The console host applies the same rule without the pending-edit exception: the received Pokémon takes
+the offered slot, so the next session sends it back.
+
+## Building and flashing
+
+The host only needs the .NET 10 SDK and NuGet network access:
 
 ```powershell
 .\setup.ps1
 ```
 
-脚本与 Visual Studio 的 `FolderProfile` 使用同一发布配置：Release、win-x64、
-依赖框架（不附带 .NET 运行时）、单文件，输出为 `app/Frlg.Trade.Desktop.exe`，不另附 DLL 或 PDB。
+The script uses the same publish configuration as the Visual Studio `FolderProfile`: Release, win-x64,
+framework-dependent (no bundled .NET runtime), single file, output `app/Frlg.Trade.Desktop.exe` with no
+separate DLLs or PDBs. On other platforms, `dotnet build host/tests/Frlg.Trade.Tests.csproj -c Release`
+builds the console host.
 
-使用以下脚本构建与烧写固件需要完整 ESP-IDF 工具链。
-可用 `firmware/tools/setup.ps1` 安装 C6、C3 所需工具链。
+Building and flashing firmware with the scripts below requires the full ESP-IDF toolchain.
+`firmware/tools/setup.ps1` installs the toolchains for the C6 and C3 on Windows. On Linux, download the
+`esp-idf-v6.1.zip` release archive, verify its SHA-256
+`cdeea7db47b90064ef185b2a1f1b33d17bcb13469a9f8cc20e06c4c4cdb4cc16`, extract it to `~/esp/esp-idf-v6.1`,
+and run `./install.sh esp32,esp32s3` (or the targets you need) inside it.
 
-固件固定使用 **ESP-IDF v6.1，提交 `fff9895c82d744c7237be8847347bdd1b07c6643`**。
-两种芯片的 LDN 桥接均使用私有 WPA 回调表与密钥安装接口。
-C6 工程还包含软件 CCMP 原始帧发送适配，以及发送诊断使用的驱动描述符和 DMA 结构偏移。
-这些私有 ABI、符号和内存布局不保证跨 SDK 版本兼容，因此不能直接更换 SDK。
+The firmware is pinned to **ESP-IDF v6.1, commit `fff9895c82d744c7237be8847347bdd1b07c6643`**.
+All chips' LDN bridging uses the private WPA callback table and key installation interface.
+The C6 project additionally contains a software-CCMP raw-frame transmit adapter and the driver descriptor
+and DMA structure offsets used by its transmit diagnostics. These private ABIs, symbols and memory layouts
+are not guaranteed to be compatible across SDK versions, so the SDK cannot simply be swapped.
 
-安装和构建脚本会校验 SDK 提交及相关归档的 SHA256；开启私有 raw TX 时，
-还会校验 C6 的 `libnet80211.a` 和 `libpp.a`。发送适配从厂商库提取对象文件，
-通过修改 ELF 符号表生成独立 overlay，将部分调用接入自定义实现；
-不会修改已安装的 SDK，并会检查所用发送和帧校验代码段的机器指令字节保持不变。
-升级 ESP-IDF 时，需要重新核对私有接口、回调表布局、库符号和结构偏移，
-通过链接审计、空口抓包与实板入网及完整交易验证后，再更新版本和哈希限制。
+The install and build scripts verify the SDK commit and the archive SHA-256. Each chip project also pins
+the SHA-256 of the closed Wi-Fi driver library it was verified against (`libnet80211.a`; the C6 raw-TX
+build also pins `libpp.a`). The C6 transmit adapter extracts object files from the vendor library,
+generates a standalone overlay by rewriting the ELF symbol table, and routes selected calls into custom
+implementations; it does not modify the installed SDK, and it checks that the machine code of the transmit
+and frame-check sections it relies on is unchanged. When upgrading ESP-IDF, re-verify the private
+interfaces, callback table layout, library symbols and structure offsets, then pass the link audit,
+an over-the-air capture, real-board room entry and a complete trade before updating the version and
+hash pins.
 
-ESP32-C6：
+ESP32-C6 (Windows scripts; the raw-TX overlay and link audit tooling has only been run on Windows):
 
 ```powershell
 .\firmware\esp32-c6\tools\probe.ps1 -Action build
 .\firmware\esp32-c6\tools\probe.ps1 -Action flash -Port COM6
 ```
 
-该脚本默认是 C6、UART、16MB、动态串口固件。烧写前关闭上位机连接和其他串口监视器。
-完整交易桥接使用 `-Mode serial`。
-串口号替换为实际设备端口，Flash 容量可用 `-FlashSize 4MB`、`8MB` 或 `16MB` 指定。
-串口桥接通过板载 USB 转串口或外接 3.3V USB 串口适配器连接电脑：
+The script defaults to C6, UART, 16 MB, dynamic-session serial firmware. Close the host connection and
+any other serial monitor before flashing. The complete trade bridge is `-Mode serial`. Replace the port
+with the actual device port; the flash size can be set with `-FlashSize 4MB`, `8MB` or `16MB`.
+The serial bridge connects to the PC through the on-board USB-to-UART bridge or an external 3.3 V USB
+serial adapter; for an external adapter, cross TX/RX and share ground. The C6's native USB Serial/JTAG
+port is only used for diagnostic configurations and cannot replace this project's UART bridge.
+The `public`, `discovery` and `send` modes are reserved for wireless diagnostics and do not provide the
+trade bridge.
 
-外接时交叉连接 TX/RX 并共地；C6 的原生 USB Serial/JTAG 接口仅用于诊断配置，不能代替该工程的 UART 桥接。
-
-`public`、`discovery`、`send` 保留作无线诊断，不提供完整交易桥接。
-
-ESP32-C3：
+ESP32-C3:
 
 ```powershell
 .\firmware\esp32-c3\tools\probe.ps1 -Action build
 .\firmware\esp32-c3\tools\probe.ps1 -Action flash -Port COM5
 ```
 
-C3 默认 4 MB Flash，通过原生 USB Serial/JTAG 连接电脑，详情见 [C3 工程说明](firmware/esp32-c3/README.md)。
-两种芯片的构建产物分别保存在各自工程的 `build*` 目录内。
+The C3 defaults to 4 MB flash and connects to the PC through its native USB Serial/JTAG port; see the
+[C3 project notes](firmware/esp32-c3/README.md).
 
-## 验证与移植
+ESP32-S3 and original ESP32 (Linux scripts shown; `probe.ps1` in the same directories does the same on Windows):
+
+```bash
+firmware/esp32-s3/tools/probe.sh build
+firmware/esp32-s3/tools/probe.sh flash /dev/ttyACM0
+firmware/esp32/tools/probe.sh build
+firmware/esp32/tools/probe.sh flash /dev/ttyUSB0
+```
+
+Each project's build output stays in its own `build*` directory and is ignored by git. The prebuilt
+images for all four chips in [`firmware/release`](firmware/release/README.md) flash with esptool at offset
+`0x0`; pass `--flash-size detect` so the image header matches the board's actual flash size.
+
+## Verification and porting
 
 ```powershell
 dotnet run --project host/tests/Frlg.Trade.Tests.csproj -c Release
 .\app\Frlg.Trade.Desktop.exe --smoke-test
-# 需关闭 GUI 连接，以下检查会清理设备会话
+# Close the GUI connection first; the following check clears the device session
 dotnet run --project host/tests/Frlg.Trade.Tests.csproj -c Release -- --device COM6
 ```
 
-协议测试使用随源码附带的合成密钥向量。私有交易回放存在时额外执行，
-不存在时明确报告跳过。
-WPF 自检会在 EXE 同目录生成 `local/ui-checks` 渲染图，测试结束后恢复真实队伍与设置。
+The protocol tests use synthetic key vectors shipped with the source. The private trade replay runs in
+addition when it is present and is explicitly reported as skipped otherwise. The WPF self-test renders
+images into `local/ui-checks` next to the EXE and restores the real party and settings afterwards.
 
-C6 已完成两笔真实交易，并验证可连接新建的不同信道房间；C3 已完成实际进房及一次完整交易验证。
-第三方设备实现请参考 [串口通信协议](docs/SERIAL_PROTOCOL.md)。
+The S3 and original ESP32 projects add a staged hardware diagnostic (`tools/diagnose.sh` or
+`diagnose.ps1`) with `serial`, `auth`, `pia` and `room` modes, from the protocol handshake up to actual
+room entry against a Switch Leader room.
 
-## 许可与数据
+Validation so far: the C6 has completed two real trades and been verified joining newly created rooms
+on different channels; the C3 has completed real room entry and one complete trade; the S3 and the
+original ESP32 have completed real trades through the console host. Third-party device implementations
+should follow the [serial protocol](docs/SERIAL_PROTOCOL.md).
 
-项目许可见根目录 `LICENSE`（AGPL-3.0）；LDN 协议组件的 GPL-3.0 许可见
-`licenses/LDN-GPL-3.0.txt`。PKHeX.Core 固定为 26.8.26，
-依赖由 `packages.lock.json` 锁定。图片来源见 `assets/README.md`。
-默认 PK3 来自用户提供的数据；分享前按需移除。`local`、`prod.keys` 与构建产物均忽略提交。
+## License and data
+
+The project license is in the root `LICENSE` (AGPL-3.0); the GPL-3.0 license of the LDN protocol
+components is in `licenses/LDN-GPL-3.0.txt`. PKHeX.Core is pinned to 26.8.26 and dependencies are
+locked by `packages.lock.json`. Image sources are listed in `assets/README.md`. The default PK3 files
+come from user-provided data; remove them before sharing if needed. `local`, `prod.keys`, `title.keys`
+and build outputs are ignored by git.

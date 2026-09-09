@@ -35,14 +35,14 @@ public sealed class TradeSession(Action<object> emit)
             File.WriteAllBytes(temp, data); File.Move(temp, target, true);
             emit(new { @event = "received", slot, pk3 = Convert.ToHexString(data) }); Record($"Trade committed; received {TradeEngine.Parse(data).Nickname}");
         };
-        Phase("正在识别串口设备");
+        Phase("Identifying the serial device");
         using var device = new SerialDevice(port, cancel);
         bool started = false;
         try
         {
             device.Handshake(); started = true; Record($"Protocol v1 device: {device.Model}");
             emit(new { @event = "device", model = device.Model });
-            Phase("正在搜索 Leader 房间");
+            Phase("Searching for a Leader room");
             var scanTime = Stopwatch.StartNew(); LdnNetwork? network = null;
             int[] channels = [1, 6, 11, 2, 3, 4, 5, 7, 8, 9, 10];
             while (network == null && scanTime.Elapsed.TotalSeconds < 25)
@@ -63,10 +63,10 @@ public sealed class TradeSession(Action<object> emit)
                     if (network != null || scanTime.Elapsed.TotalSeconds >= 25) break;
                 }
             }
-            if (network == null) throw new ConnectionException("没有找到可加入的火红 Leader 房间，请确认主机仍在等待。");
+            if (network == null) throw new ConnectionException("No joinable FireRed Leader room found; make sure the host is still waiting.");
             var derived = new LdnKeys(keys, network.Protocol); var auth = new LdnAuthentication(network, derived);
             Record($"Room verified: protocol={network.Protocol} version={network.Version} channel={network.Channel}");
-            Phase("正在关联并认证房间");
+            Phase("Associating and authenticating with the room");
             device.Command($"LDN_CONFIG {network.Channel} {Convert.ToHexString(network.Ssid).ToLowerInvariant()} {Bin.Mac(network.Host)} {Convert.ToHexString(derived.Data(network))}", 8);
             byte[]? ourMac = null; LdnNetwork? membership = null; bool accepted = false;
             var joinTime = Stopwatch.StartNew(); double nextStatus = 0, nextAuth = double.PositiveInfinity; int attempts = 0;
@@ -101,7 +101,7 @@ public sealed class TradeSession(Action<object> emit)
                 }
                 Thread.Sleep(2);
             }
-            if (ourMac == null || !accepted || membership == null) throw new ConnectionException("房间认证超时，请确认 Leader 房间并重试。");
+            if (ourMac == null || !accepted || membership == null) throw new ConnectionException("Room authentication timed out; check the Leader room and retry.");
             var ours = membership.Members.Single(m => m.Mac.AsSpan().SequenceEqual(ourMac));
             var host = membership.Members.Single(m => m.Index == 0);
             ValidateMembers(membership, ours, host);
@@ -110,7 +110,7 @@ public sealed class TradeSession(Action<object> emit)
             Record($"Network ready: serialBad={device.BadFrames}");
             var peers = membership.Members.Where(m => m.Index != ours.Index).ToDictionary(m => m.Ip, m => m.Mac);
             emit(new { @event = "connected" });
-            Phase("已加入房间，等待 Leader 确认");
+            Phase("Joined the room, waiting for the Leader");
             using var capture = new StreamWriter(Path.Combine(runPath, "pia.jsonl")) { AutoFlush = true };
             capture.WriteLine(JsonSerializer.Serialize(new { rec = "meta", ip = ours.Ip, host = host.Ip, ssid_hex = Convert.ToHexString(network.Ssid) }));
             var clock = Stopwatch.StartNew();
@@ -124,12 +124,15 @@ public sealed class TradeSession(Action<object> emit)
             {
                 cancel.ThrowIfCancellationRequested(); double now = clock.Elapsed.TotalSeconds;
                 if (now >= nextPing) { device.Command("LDN_PING", 5); nextPing = now + 1; }
-                foreach (var frame in device.Drain())
+                var frames = device.Drain();
+                // The reason arrives in the same batch as LINK 0; keep it in the log before failing.
+                foreach (var frame in frames) if (frame.Kind == 3 && Text(frame).StartsWith("LDN_DISCONNECTED ")) Record(Text(frame));
+                foreach (var frame in frames)
                 {
                     if (frame.Kind == 5 && frame.Payload.Length >= 4)
                     {
                         string source = new System.Net.IPAddress(frame.Payload[..4]).ToString();
-                        if (!peers.ContainsKey(source)) throw new ConnectionException("收到未认证房间成员的数据。");
+                        if (!peers.ContainsKey(source)) throw new ConnectionException("Received data from an unauthenticated room member.");
                         var data = frame.Payload[4..]; Capture("in", data, source, ours.Ip);
                         int before = simulator.ReceivedPackets; simulator.Receive(data, source);
                         if (before != simulator.ReceivedPackets) lastReceive = now;
@@ -138,7 +141,7 @@ public sealed class TradeSession(Action<object> emit)
                     {
                         string text = Text(frame);
                         if (text.StartsWith("LDN_ERROR ") || text.StartsWith("LDN_LINK 0 ") || text.StartsWith("LDN_NET_LOST") || text.StartsWith("LDN_UDP_ERROR "))
-                            throw new ConnectionException("无线连接已断开：" + text);
+                            throw new ConnectionException("Wireless connection lost: " + text);
                         var room = Advertisement(frame, keys);
                         if (room != null && room.Host.AsSpan().SequenceEqual(network.Host))
                         {
@@ -152,9 +155,9 @@ public sealed class TradeSession(Action<object> emit)
                 }
                 if (now >= nextTick) { simulator.Tick(); nextTick = now + 1 / 59.727; }
                 if (engine.Barrier.Mode == 2 && !closeSeen) { closeSeen = true; closeAt = now + 1.5; }
-                if (engine.Done && !doneSeen) { doneSeen = true; leaveAt = now + 120; Phase("交易已结束，等待 Leader 离房"); }
+                if (engine.Done && !doneSeen) { doneSeen = true; leaveAt = now + 120; Phase("Trade finished, waiting for the Leader to leave the room"); }
                 if (now >= closeAt || now >= leaveAt) break;
-                if (now - lastReceive > 30) throw new ConnectionException("主机通信超时，连接已断开。");
+                if (now - lastReceive > 30) throw new ConnectionException("Host communication timed out; the connection was closed.");
                 Thread.Sleep(1);
             }
             Record($"Link closed: rx={simulator.ReceivedPackets} decryptFailed={simulator.DecryptFailures} tx={simulator.SentPackets} serialBad={device.BadFrames}");
@@ -168,16 +171,16 @@ public sealed class TradeSession(Action<object> emit)
     private static void VerifySameRoom(LdnNetwork previous, LdnNetwork current)
     {
         if (!current.Id.AsSpan().SequenceEqual(previous.Id) || !current.Random.AsSpan().SequenceEqual(previous.Random))
-            throw new ConnectionException("Leader 房间已变化，请重新连接。");
+            throw new ConnectionException("The Leader room has changed; reconnect.");
     }
     private static void ValidateMembers(LdnNetwork room, LdnMember ours, LdnMember host)
     {
         if (!room.Members.Any(m => m.Ip == ours.Ip && m.Mac.AsSpan().SequenceEqual(ours.Mac)) ||
             !room.Members.Any(m => m.Index == 0 && m.Ip == host.Ip && m.Mac.AsSpan().SequenceEqual(host.Mac)) ||
             room.Members.Select(m => m.Ip).Distinct().Count() != room.Members.Count)
-            throw new ConnectionException("房间成员发生变化，当前连接已失效。");
+            throw new ConnectionException("Room membership changed; the current connection is no longer valid.");
         var prefix = ours.Ip[..(ours.Ip.LastIndexOf('.') + 1)];
         if (!prefix.StartsWith("169.254.") || room.Members.Any(m => !m.Ip.StartsWith(prefix) || m.Ip.EndsWith(".0") || m.Ip.EndsWith(".255")))
-            throw new ConnectionException("房间分配了无效的链路地址。");
+            throw new ConnectionException("The room assigned an invalid link-local address.");
     }
 }
