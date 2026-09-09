@@ -1,12 +1,12 @@
-# ESP32-C6 UART LDN 固件
+# ESP32-C6 UART LDN firmware
 
-独立的 ESP32-C6 工程，固定 ESP-IDF v6.1，通过 UART 与 Windows 上位机通信。
-源码位于 `main/`，C6 构建、烧录、原始帧适配和链接审计工具位于 `tools/`。
-SDK 安装与环境激活共用 `../tools/setup.ps1`、`../tools/environment.ps1`。
+A standalone ESP32-C6 project pinned to ESP-IDF v6.1 that talks to the host over UART.
+The sources are in `main/`; the C6 build, flash, raw-frame adapter and link-audit tools are in `tools/`.
+SDK installation and environment activation are shared through `../tools/setup.ps1` and `../tools/environment.ps1`.
 
-## 构建与烧录
+## Build and flash
 
-在仓库根目录运行：
+Run from the repository root:
 
 ```powershell
 .\firmware\tools\setup.ps1
@@ -15,37 +15,38 @@ SDK 安装与环境激活共用 `../tools/setup.ps1`、`../tools/environment.ps1
 .\firmware\esp32-c6\tools\probe.ps1 -Action flash -Port COM6
 ```
 
-将串口号替换为实际设备端口。默认配置为 C6、UART、16 MB Flash、`serial` 模式；
-Flash 容量可通过 `-FlashSize 4MB`、`8MB` 或 `16MB` 指定。
-烧录前关闭占用端口的上位机连接和串口监视器。
+Replace the port with the actual device port. The default configuration is C6, UART, 16 MB flash,
+`serial` mode; the flash size can be set with `-FlashSize 4MB`, `8MB` or `16MB`.
+Close the host connection and any serial monitor holding the port before flashing.
 
-构建目录位于本工程内，按配置命名为 `build-c6-<模式>-<接口和容量>-<信道>/`。
-默认配置的应用固件为 `build-c6-serial-uart16-1/ldn_wifi_probe.bin`；
-完整烧录文件和地址见同目录的 `flash_args`。
+Build directories live inside this project and are named `build-c6-<mode>-<interface and size>-<channel>/`.
+The default configuration's application image is `build-c6-serial-uart16-1/ldn_wifi_probe.bin`;
+the complete list of files to flash and their addresses is in `flash_args` in the same directory.
 
-## 状态指示灯
+## Status LED
 
-板载 WS2812 RGB 灯（GPIO8）以呼吸方式显示当前状态，颜色和快慢随状态变化：
+The on-board WS2812 RGB LED (GPIO8) breathes to show the current state; color and speed follow the state:
 
-| 颜色 | 状态 |
+| Color | State |
 | --- | --- |
-| 白 | 启动中 |
-| 蓝（慢） | 待机，等待上位机下发房间配置 |
-| 橙（快） | 正在加入房间 |
-| 绿 | 房间已认证，可以交易 |
-| 红（快） | 加入失败（关联超时或密钥校验未通过），约 3 秒后自动回到待机 |
+| White | Booting |
+| Blue (slow) | Standby, waiting for the host to send a room configuration |
+| Amber (fast) | Joining a room |
+| Green | Room authenticated, ready to trade |
+| Red (fast) | Join failed (association timeout or key verification failed); returns to standby after about 3 seconds |
 
-灯的驱动用官方 `espressif/led_strip` 组件，首次编译会自动联网拉取。
-可在 menuconfig 中关闭或修改 `LDN_PROBE_STATUS_LED` / `LDN_PROBE_STATUS_LED_GPIO`；
-若灯初始化失败，固件会跳过指示灯继续正常工作。
+The LED driver is the official `espressif/led_strip` component, fetched automatically on the first build.
+`LDN_PROBE_STATUS_LED` / `LDN_PROBE_STATUS_LED_GPIO` can be disabled or changed in menuconfig;
+if the LED fails to initialize, the firmware skips it and keeps working.
 
-## 通信与调试
+## Communication and debugging
 
-完整交易桥接使用 `-Mode serial -Console uart`，通过板载 USB 转串口或外接
-3.3V USB 串口适配器连接电脑。外接时交叉连接 TX/RX 并共地。
-C6 的原生 USB Serial/JTAG 配置仅用于无线诊断。
-`public`、`discovery`、`send` 模式不提供完整交易桥接。
+The complete trade bridge uses `-Mode serial -Console uart` and connects to the PC through the on-board
+USB-to-UART bridge or an external 3.3 V USB serial adapter. With an external adapter, cross TX/RX and
+share ground. The C6's native USB Serial/JTAG configuration is only for wireless diagnostics.
+The `public`, `discovery` and `send` modes do not provide the trade bridge.
 
-此工程包含针对固定 C6 驱动的原始帧发送适配和硬件发送跟踪。
-构建脚本检查 SDK 版本、驱动库哈希以及最终链接结果；这些实现不应直接用于其他芯片。
-上位机使用方式见[项目说明](../../README.md)，协议见[串口通信协议](../../docs/SERIAL_PROTOCOL.md)。
+This project contains a raw-frame transmit adapter and hardware transmit tracing tied to the pinned C6 driver.
+The build script checks the SDK version, the driver library hashes and the final link result; these
+implementations must not be reused directly on other chips. Host usage is described in the
+[project README](../../README.md); the protocol is in the [serial protocol document](../../docs/SERIAL_PROTOCOL.md).

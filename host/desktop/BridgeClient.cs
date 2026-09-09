@@ -13,7 +13,7 @@ public sealed class BridgeClient
     public bool Running { get; private set; }
     public Task StartAsync(string port, string?[] party, int selected)
     {
-        if (Running) throw new InvalidOperationException("连接正在运行。");
+        if (Running) throw new InvalidOperationException("A connection is already running.");
         var snapshot = party.Select(p => p == null ? null : Convert.FromHexString(p)).ToArray();
         cancellation = new(); Running = true;
         string run = Path.Combine(Paths.Local, "runs", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + "-native");

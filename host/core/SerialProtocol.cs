@@ -94,7 +94,7 @@ public sealed class SerialDevice : IDisposable
             }
             else if (frame.Kind is 3 or 5)
             {
-                if (events.Count >= 1024) throw new IOException("串口接收队列已满");
+                if (events.Count >= 1024) throw new IOException("Serial receive queue is full");
                 events.Enqueue(frame);
             }
         }
@@ -109,7 +109,7 @@ public sealed class SerialDevice : IDisposable
             while (!done.Contains(id))
             {
                 Pump();
-                if (watch.Elapsed.TotalSeconds > timeout) throw new TimeoutException($"设备未响应 {command.Split(' ')[0]}");
+                if (watch.Elapsed.TotalSeconds > timeout) throw new TimeoutException($"Device did not respond to {command.Split(' ')[0]}");
                 Thread.Sleep(1);
             }
             foreach (string line in lines)
@@ -131,11 +131,11 @@ public sealed class SerialDevice : IDisposable
             try { reply = Command("LDN_HELLO", 2); break; } catch (TimeoutException) { }
         }
         string? hello = reply?.FirstOrDefault(l => l.StartsWith("LDN_HELLO 1 "));
-        if (hello == null) throw new ConnectionException("设备未提供串口协议 v1，请先安装支持动态会话的新固件。");
+        if (hello == null) throw new ConnectionException("The device does not speak serial protocol v1; install newer firmware with dynamic-session support first.");
         var fields = hello.Split(' ');
         if (fields.Length != 5 || new[] { "dynamic-session", "scan", "auth", "udp" }.Except(fields[3].Split(',')).Any() ||
             !int.TryParse(fields[4], out int mtu) || mtu < 1472)
-            throw new ConnectionException("设备能力不满足交易要求。");
+            throw new ConnectionException("The device's capabilities do not meet the trade requirements.");
         Model = fields[2];
         if (port.BaudRate != 921600) { Command("LDN_BAUD 921600"); port.BaudRate = 921600; }
         Session = Bin.U32(RandomNumberGenerator.GetBytes(4)) | 1;

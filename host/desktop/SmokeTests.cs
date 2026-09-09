@@ -54,7 +54,7 @@ public static class SmokeTests
             catch (InvalidDataException) { checks++; }
             window.SetState(ConnectionState.Connecting);
             Require(!window.ConnectButton.IsEnabled && window.DisconnectButton.IsEnabled, "Connecting is cancellable");
-            using (var ready = JsonDocument.Parse("{\"event\":\"phase\",\"message\":\"正在认证\"}"))
+            using (var ready = JsonDocument.Parse("{\"event\":\"phase\",\"message\":\"Authenticating\"}"))
                 window.HandleEvent(ready.RootElement);
             Require(window.DisconnectButton.IsEnabled, "Native authentication remains cancellable");
             window.SetState(ConnectionState.Connected);
@@ -75,7 +75,7 @@ public static class SmokeTests
             var snapshot = window.LocalParty.Snapshot();
             window.LocalParty.ApplyTrainer(trainer); window.MarkChanged();
             Require(PokemonData.Parse(Convert.FromHexString(snapshot[0]!)).OriginalTrainerName == pk.OriginalTrainerName, "Connected snapshot remains unchanged");
-            Require(window.PendingChanges && window.PendingText.Text.Contains("下次连接"), "Connected edits staged");
+            Require(window.PendingChanges && window.PendingText.Text.Contains("next connection"), "Connected edits staged");
             Require(window.LocalParty.Slots.Where(s => s.Occupied).All(s => TrainerIdentity.From(s.Pokemon!) == trainer), "OT updates every local occupied slot");
             await Capture(window, output, "connected");
             window.Width = 900; window.Height = 700;

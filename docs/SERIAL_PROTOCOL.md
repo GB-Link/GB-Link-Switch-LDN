@@ -1,188 +1,217 @@
 # FRLG Serial Bridge Protocol v1
 
-本规范定义 C# 上位机与无线桥接设备之间的协议。设备型号不参与兼容性判断。
-版本 1 的参考实现分别位于 `firmware/esp32-c6/main/` 和 `firmware/esp32-c3/main/`，
-对应 `ldn_wire.c`、`ldn_control.c`、`ldn_udp.c`；
-上位机实现位于 `host/core/SerialProtocol.cs`、`host/core/TradeSession.cs`。本文路径均相对于仓库根目录。
+This specification defines the protocol between the C# host and the wireless bridge device. The device
+model plays no part in compatibility decisions. The version 1 reference implementations are in
+`firmware/esp32-c6/main/` and `firmware/esp32-c3/main/` (`ldn_wire.c`, `ldn_control.c`, `ldn_udp.c`), with
+the `firmware/esp32-s3/main/` and `firmware/esp32/main/` ports derived from the C3 implementation;
+the host implementation is in `host/core/SerialProtocol.cs` and `host/core/TradeSession.cs`.
+Paths in this document are relative to the repository root.
 
-## 职责与移植要求
+## Responsibilities and porting requirements
 
-上位机持有 prod.keys，解密和验证广播，派生本次会话密钥，执行 LDN 认证、Pia、RFU 和交易状态机。
-设备接收本次房间的派生 CCMP 密钥，处理 802.11 关联、密钥安装和网络收发。
-设备不解析 PK3，也不持有 prod.keys。更换宝可梦或房间不需要更新固件。
+The host holds prod.keys, decrypts and verifies advertisements, derives the session key, and runs LDN
+authentication, Pia, RFU and the trade state machine. The device receives the derived CCMP key for the
+current room and handles 802.11 association, key installation and network transfer. The device does not
+parse PK3 data and never holds prod.keys. Changing Pokémon or rooms does not require a firmware update.
 
-其他设备需要实现以下能力，而不只是提供串口：
+Another device must implement the following capabilities, not merely offer a serial port:
 
-- 监听指定信道的 Nintendo LDN vendor action 广播，原样上报加密内容及发送方 BSSID。
-- 与房间关联，支持 LDN 使用的 RSN/CCMP 路径，安装 pairwise/group 会话密钥。
-- 收发以太类型 0x88B7 的 LDN 认证帧。
-- 配置 169.254.x.x/24 静态地址、邻居映射及 UDP 12345，最大 UDP payload 1472 字节。
-- 正确处理 CCMP 重放保护、关联重建、断开通知和会话清理。
+- Listen for Nintendo LDN vendor action broadcasts on a given channel and report the encrypted content
+  verbatim together with the sender BSSID.
+- Associate with the room, supporting the RSN/CCMP path LDN uses, and install the pairwise and group
+  session keys.
+- Send and receive LDN authentication frames with EtherType 0x88B7.
+- Configure a static 169.254.x.x/24 address, neighbor mappings and UDP port 12345, with a maximum UDP
+  payload of 1472 bytes.
+- Handle CCMP replay protection, re-association, disconnect notification and session cleanup correctly.
 
-参考 C6 适配使用固定 ESP-IDF v6.1 私有接口。其他芯片可以使用自身驱动实现相同能力；
-无需复制 C6 的私有 ABI、硬件跟踪、烧写命令或复位引脚操作。
+The reference C6 adapter uses private interfaces of the pinned ESP-IDF v6.1. Other chips may implement the
+same capabilities with their own drivers; there is no need to copy the C6's private ABI, hardware tracing,
+flash commands or reset-pin handling.
 
-## 串口与握手
+## Serial link and handshake
 
-C6 UART 使用 8 数据位、无校验、1 停止位，无硬件流控。上电默认 115200 baud，运行时使用 921600。
-C3 使用原生 USB Serial/JTAG，兼容相同的波特率命令，但波特率设置不改变 USB 的物理传输速率。
-打开串口时不主动切换 DTR/RTS，不要求芯片专用的复位序列。
+The C6 UART uses 8 data bits, no parity, 1 stop bit and no hardware flow control. It boots at 115200 baud
+and runs at 921600. The C3 uses native USB Serial/JTAG and accepts the same baud command, but the setting
+does not change the physical USB transfer rate. Opening the port must not toggle DTR/RTS deliberately and
+must not require a chip-specific reset sequence.
 
-设备刚启动时可能有普通启动日志。上位机发送 ASCII `\nLDN_BINARY\n`，再发送一个 0x00，
-使设备进入二进制模式并让接收器找到帧边界。之后发送二进制 `LDN_HELLO` 命令。
-已处于二进制模式的设备会丢弃前面的无效启动文本，并处理后续有效帧。
-上位机可依次尝试 115200、921600，以重新打开上次未恢复波特率的设备。
+A freshly started device may print ordinary boot logs. The host sends ASCII `\nLDN_BINARY\n` followed by a
+single 0x00 byte, which puts the device into binary mode and lets the receiver find a frame boundary, and
+then sends the binary `LDN_HELLO` command. A device already in binary mode discards the invalid boot text in
+front and processes the valid frames that follow. The host may try 115200 and then 921600 in turn to reopen a
+device that was left at the other rate.
 
-HELLO 响应示例：`LDN_HELLO 1 esp32c6 dynamic-session,scan,auth,udp 1472`。
-字段依次为版本、型号、逗号分隔能力、MTU。型号仅用于展示和诊断。
-上位机应校验版本和所需能力；不能向旧固件下发动态配置后假定成功。
+Example HELLO response: `LDN_HELLO 1 esp32c6 dynamic-session,scan,auth,udp 1472`. The fields are the
+version, the model, the comma-separated capabilities and the MTU. The model is only for display and
+diagnostics. The host must check the version and the required capabilities; it must not send a dynamic
+configuration to old firmware and assume success.
 
-## 帧结构
+## Frame structure
 
-每个原始帧先进行 COBS 编码，再附加一个 0x00 分隔符。COBS 编码区内不含 0x00。
-接收器必须支持一次读到半帧、多帧、噪声及超长帧；错误后丢弃到下一个 0x00 重新同步。
+Each raw frame is COBS-encoded and followed by one 0x00 delimiter. The COBS-encoded region contains no
+0x00. The receiver must cope with partial frames, several frames in one read, noise and overlong frames;
+after an error it discards data up to the next 0x00 and resynchronizes.
 
-| 原始帧偏移 | 长度 | 内容 |
+| Raw frame offset | Length | Content |
 | --- | --- | --- |
-| 0 | 1 | 协议版本，固定 1 |
-| 1 | 1 | 消息类型 |
-| 2 | 4 | request_id，小端 |
-| 6 | 4 | session_id，小端 |
-| 10 | 2 | payload 长度，小端 |
+| 0 | 1 | Protocol version, fixed 1 |
+| 1 | 1 | Message type |
+| 2 | 4 | request_id, little-endian |
+| 6 | 4 | session_id, little-endian |
+| 10 | 2 | payload length, little-endian |
 | 12 | N | payload |
-| 12+N | 4 | CRC-32/ISO-HDLC，小端 |
+| 12+N | 4 | CRC-32/ISO-HDLC, little-endian |
 
-CRC 覆盖前 12+N 字节；反射多项式 0xEDB88320，初值和最终异或均为 0xFFFFFFFF。
-原始帧最大 4096 字节，payload 最大 4080 字节。校验、长度或版本不匹配的帧不得执行。
-参考固件的 ASCII 命令上限为 3015 字节；版本 1 命令表中的命令均应保持在此范围内。
-COBS 是定界编码，CRC 是传输错误检测，二者都不是加密或身份认证。
+The CRC covers the first 12+N bytes; reflected polynomial 0xEDB88320, initial value and final XOR both
+0xFFFFFFFF. A raw frame is at most 4096 bytes and the payload at most 4080 bytes. Frames whose checksum,
+length or version does not match must not be executed. The reference firmware's ASCII command limit is
+3015 bytes, and every command in the version 1 command table must stay within it. COBS is a framing
+encoding and the CRC detects transmission errors; neither is encryption or authentication.
 
-| 类型 | 方向 | payload |
+| Type | Direction | payload |
 | --- | --- | --- |
-| 1 | 上位机→设备 | ASCII 控制命令，无 NUL、CR、LF |
-| 2 | 设备→上位机 | 请求响应，ASCII，无换行 |
-| 3 | 设备→上位机 | 异步状态或广播，ASCII，无换行 |
-| 4 | 上位机→设备 | 目标 IPv4 的 4 个网络序字节 + 原始 UDP payload |
-| 5 | 设备→上位机 | 来源 IPv4 的 4 个网络序字节 + 原始 UDP payload |
+| 1 | host → device | ASCII control command, no NUL, CR or LF |
+| 2 | device → host | Request response, ASCII, no line breaks |
+| 3 | device → host | Asynchronous status or broadcast, ASCII, no line breaks |
+| 4 | host → device | 4 network-order bytes of the destination IPv4 + raw UDP payload |
+| 5 | device → host | 4 network-order bytes of the source IPv4 + raw UDP payload |
 
-UDP 不做十六进制编码。其 payload 最大 1476 字节（4+1472）。IPv4 字节序不随头部的小端规则改变。
+UDP payloads are not hex-encoded. A UDP payload is at most 1476 bytes (4+1472). The IPv4 byte order does
+not follow the header's little-endian rule.
 
-## 请求与会话
+## Requests and sessions
 
-控制请求使用非零 request_id。所有直接响应沿用该编号，最后一条响应是 `LDN_DONE`。
-先收到 `_RESULT 0` 或其他响应不代表整个请求接收完毕，必须读到 DONE。
-异步事件使用 request_id=0；UDP 发送使用 request_id=0，成功时不逐包回复。
-DONE 只表示命令处理结束；例如 CONFIG 的关联完成还需要等待 LINK 事件。
+Control requests use a non-zero request_id. Every direct response carries that id, and the last response
+is `LDN_DONE`. Receiving `_RESULT 0` or another response first does not mean the request has completed;
+the host must read up to DONE. Asynchronous events use request_id=0; UDP sends use request_id=0 and are
+not acknowledged per packet on success. DONE only means that command processing has ended; for example,
+CONFIG's association still has to be awaited through the LINK event.
 
-上位机每次连接生成新的非零 session_id，发送 `LDN_BEGIN <8位十六进制ID>`。
-BEGIN 停止旧连接、清空旧接收队列并切换 session_id。该请求的响应使用新 session_id。
-HELLO 和 BEGIN 是跨会话入口，其他请求的 session_id 必须等于设备当前值，否则拒绝。
-上位机丢弃其他会话的迟到事件。上电时 session_id=0，设备重启必须重新握手和 BEGIN。
+The host generates a new non-zero session_id for each connection and sends `LDN_BEGIN <8 hex digits>`.
+BEGIN stops the previous connection, clears the old receive queue and switches the session_id. The
+response to that request uses the new session_id. HELLO and BEGIN are cross-session entry points; every
+other request's session_id must equal the device's current value or the request is rejected. The host
+discards late events from other sessions. At power-up session_id=0; after a device reboot the handshake
+and BEGIN must be repeated.
 
-版本 1 控制请求串行执行，同一时间最多等待一个请求。不自动重发有副作用的命令；
-超时后结束当前连接，并通过新 BEGIN 恢复。request_id 用于匹配响应，不提供持久化去重语义。
-设备不得把重复请求编号理解为新的可靠传输序号；上位机须在同一连接内递增编号。
+Version 1 control requests execute serially, with at most one request outstanding at a time. Commands with
+side effects are not resent automatically; after a timeout the current connection ends and recovery goes
+through a new BEGIN. request_id matches responses to requests and carries no persistent de-duplication
+semantics. The device must not interpret a repeated request id as a new reliable-transport sequence
+number, and the host must increment the id within a connection.
 
-## 命令表
+## Command table
 
-| 命令 | 参数 | 响应或效果 |
+| Command | Arguments | Response or effect |
 | --- | --- | --- |
-| `LDN_HELLO` | 无 | HELLO 版本/能力信息，DONE |
-| `LDN_BEGIN` | 8位十六进制 session_id | 清理旧会话，`LDN_BEGUN`，DONE |
-| `LDN_BAUD` | 115200 或 921600 | `LDN_BAUD_READY <baud>`、DONE 都以旧速率发完，然后切换 |
-| `LDN_SCAN` | 信道，参考实现 1..11 | 空闲状态切换信道，`LDN_SCAN_RESULT <code>` |
-| `LDN_CONFIG` | 信道、SSID、BSSID、派生密钥 | `LDN_CONFIG_RESULT <code>`，随后异步关联 |
-| `LDN_STATUS` | 无 | SESSION、LINK、诊断计数，DONE |
-| `LDN_TX` | 认证 payload 的十六进制 | `LDN_TX_RESULT <code>` |
-| `LDN_NET` | 本机 IPv4、Leader IPv4 | 配置 /24 地址和 UDP socket，`LDN_NET_RESULT <code>` |
-| `LDN_NEIGH` | IPv4、12位十六进制 MAC | 添加或替换静态邻居，`LDN_NEIGH_RESULT <code>` |
-| `LDN_FORGET` | IPv4 | 删除邻居，`LDN_NEIGH_RESULT <code>` |
-| `LDN_PING` | 无 | `LDN_PONG <tx> <rx> <rejected>` |
-| `LDN_STOP` | 无 | 停止网络、清理密钥及队列，`LDN_STOPPED` |
+| `LDN_HELLO` | none | HELLO version/capability line, DONE |
+| `LDN_BEGIN` | 8-hex-digit session_id | Clean up the old session, `LDN_BEGUN`, DONE |
+| `LDN_BAUD` | 115200 or 921600 | `LDN_BAUD_READY <baud>` and DONE are sent at the old rate, then the rate switches |
+| `LDN_SCAN` | channel, 1..11 in the reference implementation | Switches channel while idle, `LDN_SCAN_RESULT <code>` |
+| `LDN_CONFIG` | channel, SSID, BSSID, derived key | `LDN_CONFIG_RESULT <code>`, then asynchronous association |
+| `LDN_STATUS` | none | SESSION, LINK, diagnostic counters, DONE |
+| `LDN_TX` | authentication payload in hex | `LDN_TX_RESULT <code>` |
+| `LDN_NET` | local IPv4, Leader IPv4 | Configure the /24 address and UDP socket, `LDN_NET_RESULT <code>` |
+| `LDN_NEIGH` | IPv4, 12-hex-digit MAC | Add or replace a static neighbor, `LDN_NEIGH_RESULT <code>` |
+| `LDN_FORGET` | IPv4 | Remove a neighbor, `LDN_NEIGH_RESULT <code>` |
+| `LDN_PING` | none | `LDN_PONG <tx> <rx> <rejected>` |
+| `LDN_STOP` | none | Stop networking, clear keys and queues, `LDN_STOPPED` |
 
-CONFIG 参数格式：
+CONFIG argument format:
 
 ```text
 LDN_CONFIG <channel> <ssid32hex> <bssid-colon-separated> <ccmp32hex>
 ```
 
-SSID 参数是 LDN 的 16 字节标识的十六进制字符串。无线 SSID 使用这 32 个 ASCII 字符，
-不能把它误当成 16 个原始二进制 SSID 字节。BSSID 是 6 字节单播 MAC。CCMP 密钥为 16 字节。
-配置先完整校验再应用，参数留在 RAM。不得回显密钥、写入普通诊断日志或默认保存到 Flash。
+The SSID argument is the hex string of LDN's 16-byte identifier. The wireless SSID is those 32 ASCII
+characters; do not mistake them for 16 raw binary SSID bytes. The BSSID is a 6-byte unicast MAC. The CCMP
+key is 16 bytes. The configuration is validated completely before it is applied, and the arguments stay in
+RAM. The key must never be echoed, written to ordinary diagnostic logs, or saved to flash by default.
 
-## 事件与错误
+## Events and errors
 
-| 事件 | 意义 |
+| Event | Meaning |
 | --- | --- |
-| `LDN_ADV <bssid> <channel> <hex>` | 完整加密广播；上位机必须验证后才能采用 |
-| `LDN_LINK <0或1> <本机MAC>` | 无线链路变化；LINK 1 不代表 LDN 业务认证完成 |
-| `LDN_RX <sourceMAC> <hex>` | 以太类型 0x88B7 的认证 payload，不含以太网头 |
-| `LDN_NET_LOST` | 链路失效或上位机心跳丢失，设备已停止 UDP |
-| `LDN_UDP_ERROR <code>` | UDP 发送失败，不能当作成功发送 |
-| `LDN_ERROR <reason>` | 例如 STALE_SESSION、INVALID_SESSION、ASSOCIATION_TIMEOUT |
+| `LDN_ADV <bssid> <channel> <hex>` | Complete encrypted advertisement; the host must verify it before using it |
+| `LDN_LINK <0 or 1> <local MAC>` | Wireless link change; LINK 1 does not mean LDN authentication is complete |
+| `LDN_RX <sourceMAC> <hex>` | Authentication payload of EtherType 0x88B7, without the Ethernet header |
+| `LDN_NET_LOST` | The link failed or the host heartbeat was lost; the device has stopped UDP |
+| `LDN_UDP_ERROR <code>` | A UDP send failed and must not be treated as sent |
+| `LDN_ERROR <reason>` | For example STALE_SESSION, INVALID_SESSION, ASSOCIATION_TIMEOUT |
 
-`_RESULT 0` 表示成功，非零表示失败。v1 的具体非零数字保留为设备实现相关的诊断值；
-上位机不依赖 ESP-IDF 错误码，只按成功/失败处理。未知能力和诊断字段可忽略，
-不支持的版本或缺少所需能力时必须停止连接；未知帧类型不执行，当前上位机忽略未知扩展事件。
+`_RESULT 0` means success and any other value means failure. The specific non-zero values in v1 are
+reserved as implementation-specific diagnostics; the host does not depend on ESP-IDF error codes and only
+distinguishes success from failure. Unknown capabilities and diagnostic fields may be ignored; an
+unsupported version or a missing required capability must stop the connection; unknown frame types are not
+executed, and the current host ignores unknown extension events.
 
-参考上位机控制请求默认超时 3 秒；BEGIN、CONFIG 为 8 秒；设备识别每档速率为 2 秒。
-扫描总计约 25 秒，每信道停留 500ms；认证总计 40 秒，最多发送三次认证请求，间隔 700ms。
-这是 LDN 层对同一次认证的重发，不是重复执行串口 CONFIG。
+The reference host's default control-request timeout is 3 seconds; BEGIN and CONFIG use 8 seconds; device
+identification allows 2 seconds per baud rate. Scanning takes about 25 seconds in total with 500 ms per
+channel; authentication takes 40 seconds in total with at most three authentication requests 700 ms apart.
+Those are LDN-level retries of the same authentication, not repeated serial CONFIG commands.
 
-## 流量与恢复
+## Flow and recovery
 
-上位机每秒发送 PING，等待 PONG 最多 5 秒；UDP 工作期间设备超过 10 秒未收到 PING 则释放连接。
-上位机超过 30 秒未收到有效主机 Pia 包视为失联。正常 CLOSE 握手允许 1.5 秒回复尾段。
+The host sends PING every second and waits up to 5 seconds for PONG; while UDP is active, the device
+releases the connection after more than 10 seconds without a PING. The host treats more than 30 seconds
+without a valid host Pia packet as loss of contact. The normal CLOSE handshake allows 1.5 seconds for the
+trailing replies.
 
-v1 不使用逐字节流控或串口级 UDP 重传；可靠性由 Pia selective-repeat 层处理。
-参考上位机可靠发送窗口最多 6 帧，按约 59.727Hz 驱动，批量发送最多 9 条 Pia message，
-K ACK 每步最多 3 个且未确认的 K 最多 3 个，新 T 受主机轮询 credit 限制。
-C6 UART RX 缓冲 32768 字节，TX 缓冲 4096 字节；C3 USB RX 缓冲 32768 字节，TX 缓冲 8192 字节。
-两种参考固件每轮最多上报 2 个 UDP 包；
-其他设备需满足等价吞吐和缓存，不能静默丢弃已经确认接收的控制命令。
+v1 uses no per-byte flow control and no serial-level UDP retransmission; reliability comes from the Pia
+selective-repeat layer. The reference host's reliable send window is at most 6 frames, driven at about
+59.727 Hz, sending at most 9 Pia messages per batch, at most 3 K acknowledgements per step with at most 3
+K outstanding, and new T packets limited by the host's polling credit. The C6 UART RX buffer is 32768 bytes
+and its TX buffer 4096 bytes; the C3 USB RX buffer is 32768 bytes and its TX buffer 8192 bytes. Both
+reference firmwares report at most 2 UDP packets per poll round; other devices must provide equivalent
+throughput and buffering and must not silently drop control commands they have already acknowledged.
 
-单个损坏帧丢弃后继续同步并计数；队列溢出、串口拔出、CRC 错误导致请求超时、
-设备重启引起心跳或请求超时均结束当前会话，释放串口并恢复界面状态。
-不会在进行中的交易里自动重连或替换已经发送的队伍。正常结束由 Switch 取消和离房驱动。
+A single corrupt frame is discarded and counted, and synchronization continues. Queue overflow, an unplugged
+serial port, a request timeout caused by CRC errors, or a heartbeat or request timeout after a device
+reboot all end the current session, release the serial port and restore the interface state. There is no
+automatic reconnection or replacement of an already-sent party in the middle of a trade. A normal end is
+driven by the Switch cancelling and leaving the room.
 
-## 正常时序
+## Normal sequence
 
 ```mermaid
 sequenceDiagram
-    participant PC as C# 上位机
-    participant MCU as 串口桥接设备
+    participant PC as C# host
+    participant MCU as Serial bridge device
     participant SW as Switch Leader
     PC->>MCU: HELLO / BAUD / BEGIN
     PC->>MCU: SCAN channel
     SW-->>MCU: LDN advertisement
     MCU-->>PC: ADV
-    Note over PC: 验证广播并派生会话密钥
+    Note over PC: Verify the advertisement and derive the session key
     PC->>MCU: CONFIG
-    MCU->>SW: 关联并安装 CCMP
+    MCU->>SW: Associate and install CCMP
     MCU-->>PC: LINK 1
     PC->>MCU: TX authentication
     MCU->>SW: LDN authentication
     SW-->>MCU: Authentication response / members
     MCU-->>PC: RX / ADV
-    Note over PC: 验证 challenge 和成员身份
+    Note over PC: Verify the challenge and member identities
     PC->>MCU: NET / NEIGH
     PC->>MCU: UDP Pia/RFU
     MCU->>SW: UDP Pia/RFU
     SW-->>MCU: UDP Pia/RFU
     MCU-->>PC: UDP receive
-    Note over PC,SW: 交换队伍、用户确认、交易、取消、离房
+    Note over PC,SW: Exchange parties, user confirmation, trade, cancel, leave the room
     PC->>MCU: STOP
     MCU-->>PC: STOPPED / DONE
 ```
 
-## 移植验收
+## Porting acceptance
 
-1. COBS/CRC 的空帧、最大帧、分包/粘包、噪声恢复、错误长度测试。
-2. HELLO、速率切换、BEGIN、错误会话拒绝、重复打开串口测试。
-3. 扫描多个信道，验证真实广播与上报信道一致。
-4. 不重刷固件切换到新建房间；同一房间断开再连时不复用错误的 CCMP 重放状态。
-5. LDN challenge 校验、成员地址验证，完整队伍交换和 PK3 校验。
-6. 实际交易、结果落盘、取消、正常退出，再验证拔线或无线断开的状态恢复。
+1. COBS/CRC tests: empty frame, maximum frame, split and coalesced frames, noise recovery, wrong lengths.
+2. HELLO, rate switch, BEGIN, rejection of a wrong session, repeated reopening of the serial port.
+3. Scan several channels and verify that real advertisements are reported with the matching channel.
+4. Switch to a newly created room without reflashing; reconnecting to the same room must not reuse a wrong
+   CCMP replay state.
+5. LDN challenge verification, member address verification, a complete party exchange and PK3 verification.
+6. A real trade, results written to disk, cancellation and a normal exit, then state recovery after
+   unplugging the cable or losing the wireless link.
 
-自动化参考：`host/tests` 中的 C# 测试。`host/tests/fixtures/vectors.json` 提供固定协议向量，
-使用合成密钥；真实抓包与可选交易回放仅保存在 `local/`。
+Automated reference: the C# tests in `host/tests`. `host/tests/fixtures/vectors.json` provides fixed protocol
+vectors with synthetic keys; real captures and the optional trade replay stay in `local/` only.

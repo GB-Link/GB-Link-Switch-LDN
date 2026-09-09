@@ -1,7 +1,7 @@
 namespace Frlg.Trade.Core;
 
 public sealed class MissingKeysException(string directory) : FileNotFoundException(
-    $"未找到 prod.keys，请将文件放到程序所在目录后重试。\n{directory}")
+    $"prod.keys not found. Place the file in the program directory and retry.\n{directory}")
 { public string DirectoryPath { get; } = directory; }
 
 public sealed class KeyFile
@@ -18,21 +18,21 @@ public sealed class KeyFile
             string line = raw.Trim();
             if (line.Length == 0 || line.StartsWith('#') || line.StartsWith(';')) continue;
             var parts = line.Split('=', 2, StringSplitOptions.TrimEntries);
-            if (parts.Length != 2) throw new InvalidDataException($"prod.keys 第 {number} 行格式错误：{path}");
+            if (parts.Length != 2) throw new InvalidDataException($"prod.keys line {number} is malformed: {path}");
             try
             {
                 if (!values.TryAdd(parts[0], Convert.FromHexString(parts[1]))) throw new FormatException();
             }
-            catch (FormatException) { throw new InvalidDataException($"prod.keys 第 {number} 行格式错误或键名重复：{path}"); }
+            catch (FormatException) { throw new InvalidDataException($"prod.keys line {number} is malformed or repeats a key: {path}"); }
         }
         Get("aes_kek_generation_source"); Get("aes_key_generation_source");
         if (!values.ContainsKey("master_key_00") && !values.ContainsKey("master_key_12"))
-            throw new InvalidDataException($"prod.keys 缺少支持的 master_key：{path}");
+            throw new InvalidDataException($"prod.keys has no supported master_key: {path}");
     }
     public byte[] Get(string name)
     {
         if (!values.TryGetValue(name, out var key) || key.Length != 16)
-            throw new InvalidDataException($"prod.keys 缺少有效的 {name}：{SourcePath}");
+            throw new InvalidDataException($"prod.keys has no valid {name}: {SourcePath}");
         return key;
     }
     public bool Supports(int protocol) => values.ContainsKey(protocol == 1 ? "master_key_00" : "master_key_12");

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Frlg.Trade.Core;
+using PKHeX.Core;
 
 string root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../"));
 int checks = 0;
@@ -25,18 +26,87 @@ if (args.Length >= 2 && args[0] == "--device")
     device.Command("LDN_SCAN 1"); Console.WriteLine("Command recovery: OK");
     device.Stop(); Console.WriteLine("Stop: OK"); return;
 }
+// Standby party: the same local/party.json the desktop app uses (six hex PK3 slots + offered index).
+string partyFile = Path.Combine(root, "local/party.json");
+(byte[]?[] Slots, int Selected) LoadParty()
+{
+    var slots = new byte[]?[6]; int selected = 1;
+    if (File.Exists(partyFile))
+    {
+        using var doc = JsonDocument.Parse(File.ReadAllText(partyFile));
+        var entries = doc.RootElement.GetProperty("slots").EnumerateArray().ToArray();
+        if (entries.Length != 6) throw new InvalidDataException("local/party.json must have six slots");
+        for (int i = 0; i < 6; i++) slots[i] = entries[i].ValueKind == JsonValueKind.Null ? null : Convert.FromHexString(entries[i].GetString()!);
+        selected = doc.RootElement.GetProperty("selected").GetInt32();
+    }
+    else { slots[0] = File.ReadAllBytes(Path.Combine(root, "assets/party/mewtwo.pk3")); slots[1] = File.ReadAllBytes(Path.Combine(root, "assets/party/deoxys.pk3")); }
+    if (selected < 0 || selected > 5 || slots[selected] == null) selected = Math.Max(0, Array.FindIndex(slots, x => x != null));
+    return (slots, selected);
+}
+void SaveParty(byte[]?[] slots, int selected)
+{
+    Directory.CreateDirectory(Path.GetDirectoryName(partyFile)!);
+    string temp = partyFile + ".tmp";
+    File.WriteAllText(temp, JsonSerializer.Serialize(new { selected, slots = slots.Select(x => x == null ? null : Convert.ToHexString(x)).ToArray() }));
+    File.Move(temp, partyFile, true);
+}
+string Describe(byte[] data)
+{
+    var pk = TradeEngine.Parse(data);
+    return $"{pk.Nickname} ({SpeciesName.GetSpeciesName(pk.Species, 2)} Lv.{pk.CurrentLevel}, OT {pk.OriginalTrainerName} {pk.TID16:D5})";
+}
+void PrintParty(byte[]?[] slots, int selected)
+{
+    Console.WriteLine(File.Exists(partyFile) ? $"Party from {partyFile}:" : "Party from the default assets (no local/party.json yet):");
+    for (int i = 0; i < 6; i++) Console.WriteLine($"  {i + 1}: {(slots[i] == null ? "(empty)" : Describe(slots[i]!))}{(i == selected ? "   <- offered" : "")}");
+}
+int Slot(string text) => int.TryParse(text, out int n) && n is >= 1 and <= 6 ? n - 1 : throw new ArgumentException("Slot must be 1-6");
+
+if (args.Length >= 1 && args[0] == "--party")
+{
+    var (slots, selected) = LoadParty(); PrintParty(slots, selected); return;
+}
+if (args.Length >= 3 && args[0] == "--party-set")
+{
+    var (slots, selected) = LoadParty(); int slot = Slot(args[1]);
+    var pk = TradeEngine.Parse(File.ReadAllBytes(args[2])); pk.RefreshChecksum(); slots[slot] = pk.Data.ToArray();
+    SaveParty(slots, selected); PrintParty(slots, selected); return;
+}
+if (args.Length >= 2 && args[0] == "--party-clear")
+{
+    var (slots, selected) = LoadParty(); int slot = Slot(args[1]); slots[slot] = null;
+    if (selected == slot) selected = Math.Max(0, Array.FindIndex(slots, x => x != null));
+    SaveParty(slots, selected); PrintParty(slots, selected); return;
+}
+if (args.Length >= 2 && args[0] == "--party-offer")
+{
+    var (slots, _) = LoadParty(); int slot = Slot(args[1]);
+    if (slots[slot] == null) throw new ArgumentException($"Slot {slot + 1} is empty");
+    SaveParty(slots, slot); PrintParty(slots, slot); return;
+}
 if (args.Length >= 2 && args[0] == "--live")
 {
-    var party = new byte[]?[] { File.ReadAllBytes(Path.Combine(root, "assets/party/mewtwo.pk3")), File.ReadAllBytes(Path.Combine(root, "assets/party/deoxys.pk3")), null, null, null, null };
+    var (party, offered) = LoadParty();
+    for (int i = 2; i + 1 < args.Length; i++) if (args[i] == "--offer") offered = Slot(args[i + 1]);
+    if (party[offered] == null) throw new ArgumentException($"Slot {offered + 1} is empty");
+    if (party.Count(x => x != null) < 2) throw new ArgumentException("The party needs at least two Pokémon; add one with --party-set <slot> <file.pk3>");
+    PrintParty(party, offered);
     using var cancellation = new CancellationTokenSource(TimeSpan.FromMinutes(8));
     Console.CancelKeyPress += (_, e) => { e.Cancel = true; cancellation.Cancel(); };
     string path = Path.Combine(root, "local/runs", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + "-native-console");
+    Directory.CreateDirectory(path); File.WriteAllBytes(Path.Combine(path, "offered.pk3"), party[offered]!);
     new TradeSession(e =>
     {
         var message = JsonSerializer.SerializeToElement(e); string kind = message.GetProperty("event").GetString()!;
         if (kind is "log" or "phase") Console.WriteLine(message.GetProperty("message").GetString());
         else Console.WriteLine(kind);
-    }).Run(args[1], party, 1, path, cancellation.Token);
+        if (kind == "received")
+        {
+            // Like the desktop app: the received Pokémon takes the offered slot, so the next trade sends it back.
+            int slot = message.GetProperty("slot").GetInt32(); party[slot] = Convert.FromHexString(message.GetProperty("pk3").GetString()!);
+            SaveParty(party, offered); Console.WriteLine($"Party slot {slot + 1} is now {Describe(party[slot]!)}; saved to {partyFile}");
+        }
+    }).Run(args[1], party, offered, path, cancellation.Token);
     return;
 }
 

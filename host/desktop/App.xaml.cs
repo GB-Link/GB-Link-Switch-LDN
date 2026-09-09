@@ -25,7 +25,7 @@ public partial class App : Application
         {
             Directory.CreateDirectory(Paths.Local);
             File.WriteAllText(Path.Combine(Paths.Local, "desktop-error.log"), error.ToString());
-            if (!e.Args.Contains("--smoke-test")) MessageBox.Show(error.Message, "启动失败");
+            if (!e.Args.Contains("--smoke-test")) MessageBox.Show(error.Message, "Startup failed");
             Shutdown(1);
         }
     }

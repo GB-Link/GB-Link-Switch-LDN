@@ -18,7 +18,7 @@ public static class Paths
 public static class DefaultAssets
 {
     public static Stream Open(string name) => typeof(DefaultAssets).Assembly.GetManifestResourceStream("Assets." + name)
-        ?? throw new FileNotFoundException($"缺少内置资源：{name}");
+        ?? throw new FileNotFoundException($"Missing embedded resource: {name}");
 
     public static byte[] Party(string name)
     {
@@ -38,17 +38,17 @@ public abstract class Observable : INotifyPropertyChanged
 public sealed record TrainerIdentity(ushort Tid, ushort Sid, string Name, byte Gender)
 {
     public static TrainerIdentity From(PK3 pk) => new(pk.TID16, pk.SID16, pk.OriginalTrainerName, pk.OriginalTrainerGender);
-    public string Label => $"{Name}  ·  {(Gender == 0 ? "男" : "女")}  ·  TID {Tid:D5}  /  SID {Sid:D5}";
+    public string Label => $"{Name}  ·  {(Gender == 0 ? "Male" : "Female")}  ·  TID {Tid:D5}  /  SID {Sid:D5}";
 }
 
 public static class PokemonData
 {
     public static PK3 Parse(byte[] bytes)
     {
-        if (bytes.Length is not (80 or 100)) throw new InvalidDataException("PK3 必须为 80 或 100 字节。");
+        if (bytes.Length is not (80 or 100)) throw new InvalidDataException("A PK3 must be 80 or 100 bytes.");
         var pk = new PK3(bytes.ToArray());
         if (!pk.ChecksumValid || pk.Species is 0 or > 386 || pk.FlagIsBadEgg)
-            throw new InvalidDataException("PK3 校验失败，或不是有效的第三世代宝可梦。");
+            throw new InvalidDataException("PK3 checksum failed, or this is not a valid Generation 3 Pokémon.");
         if (bytes.Length == 80 || pk.Stat_Level == 0) pk.ResetPartyStats();
         return pk;
     }
@@ -67,7 +67,7 @@ public static class PokemonData
         copy.OriginalTrainerName = trainer.Name;
         copy.OriginalTrainerGender = trainer.Gender;
         if (copy.OriginalTrainerName != trainer.Name)
-            throw new InvalidDataException($"{pk.Nickname} 的语言无法完整保存初训家名称“{trainer.Name}”。");
+            throw new InvalidDataException($"The language of {pk.Nickname} cannot store the trainer name \"{trainer.Name}\".");
         copy.RefreshChecksum();
         return copy;
     }
@@ -85,9 +85,9 @@ public sealed class PokemonSlot(int index, bool opponent) : Observable
     public string Level => pokemon is null ? "" : $"Lv. {pokemon.CurrentLevel}";
     public string Gender => pokemon?.Gender switch { 0 => "♂", 1 => "♀", 2 => "-", _ => "" };
     public Brush GenderBrush => pokemon?.Gender == 1 ? Brushes.LightPink : Brushes.LightCyan;
-    public string Selection => selected && Occupied ? "提供槽位" : "";
+    public string Selection => selected && Occupied ? "Offered" : "";
     public Brush Outline => selected && Occupied ? new SolidColorBrush(Color.FromRgb(255, 207, 70)) : new SolidColorBrush(Color.FromArgb(90, 118, 181, 230));
-    public string Details => pokemon is null ? "" : $"{pokemon.Nickname} · #{pokemon.Species:D3}\n{TrainerIdentity.From(pokemon).Label}\n个体值 {pokemon.IV_HP}/{pokemon.IV_ATK}/{pokemon.IV_DEF}/{pokemon.IV_SPA}/{pokemon.IV_SPD}/{pokemon.IV_SPE}\nPK3 校验正常";
+    public string Details => pokemon is null ? "" : $"{pokemon.Nickname} · #{pokemon.Species:D3}\n{TrainerIdentity.From(pokemon).Label}\nIVs {pokemon.IV_HP}/{pokemon.IV_ATK}/{pokemon.IV_DEF}/{pokemon.IV_SPA}/{pokemon.IV_SPD}/{pokemon.IV_SPE}\nPK3 checksum OK";
     public ImageSource? Sprite { get; private set; }
     public void Set(PK3? value)
     {
@@ -129,7 +129,7 @@ public sealed class PartyStore
         {
             using var doc = JsonDocument.Parse(File.ReadAllText(FilePath));
             var entries = doc.RootElement.GetProperty("slots").EnumerateArray().ToArray();
-            if (entries.Length != 6) throw new InvalidDataException("队伍记录必须有六个槽位。");
+            if (entries.Length != 6) throw new InvalidDataException("The party record must have six slots.");
             for (int i = 0; i < 6; i++)
                 Slots[i].Set(entries[i].ValueKind == JsonValueKind.Null ? null : PokemonData.Parse(Convert.FromHexString(entries[i].GetString()!)));
             Selected = doc.RootElement.GetProperty("selected").GetInt32();
