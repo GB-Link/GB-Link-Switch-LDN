@@ -21,6 +21,10 @@
 #include "freertos/task.h"
 #include "nvs_flash.h"
 #include "ldn_control.h"
+#include "ldn_keys.h"
+#include "pia_bridge.h"
+#include "pia_crypto.h"
+#include "esp_heap_caps.h"
 #include "ldn_session.h"
 #include "ldn_udp.h"
 #include "ldn_wire.h"
@@ -88,6 +92,18 @@ static void export_advertisement(void)
     }
     hex[2 * length] = '\0';
     printf("LDN_ADV " MACSTR " %u %s\n", MAC2STR(source), channel, hex);
+    /* Decode locally too: once the session layer moves here the host is only a console. */
+    static ldn_network_t room;
+    if (ldn_decode_advertisement(body, length, source, channel, &room)) {
+        const char *host_name = "";
+        for (int i = 0; i < room.member_count; ++i)
+            if (room.members[i].index == 0) host_name = room.members[i].name;
+        printf("LDN_ROOM " MACSTR " ch=%d proto=%d comm=%016llx members=%d/%d host=%s app=%d\n",
+               MAC2STR(source), room.channel, room.protocol,
+               (unsigned long long)room.communication_id, room.member_count, room.maximum,
+               host_name, room.app_data_len);
+        pia_bridge_room(&room);
+    }
     fflush(stdout);
 }
 
@@ -455,10 +471,18 @@ static void run_private_join(void)
 {
     s_probe_task = xTaskGetCurrentTaskHandle();
     ldn_control_init(s_station_netif, s_target_bssid);
+    /* Claim the zstd context after the transport is up but before a session starts;
+       it needs one large contiguous block and nothing else may take it. */
+    printf("LDN_PIA_PREPARE ok=%d size=%u heap=%u largest=%u psram=%u\n",
+           pia_crypto_prepare(), (unsigned)pia_crypto_dctx_size(),
+           (unsigned)esp_get_free_heap_size(),
+           (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
+           (unsigned)heap_caps_get_total_size(MALLOC_CAP_SPIRAM));
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_event, NULL));
     int64_t last_advertisement = 0;
     for (;;) {
         ldn_control_poll();
+        pia_bridge_poll();
         int reason = atomic_exchange(&s_disconnect_reason, -1);
         if (reason >= 0) printf("LDN_DISCONNECTED %d\n", reason);
         const int64_t now = esp_timer_get_time();
