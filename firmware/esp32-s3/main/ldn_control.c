@@ -14,6 +14,8 @@
 #include "ldn_session.h"
 #include "ldn_wire.h"
 #include "pico_link.h"
+#include "ldn_keys.h"
+#include "pia_bridge.h"
 #define printf ldn_wire_printf
 #define MACSTR "%02x:%02x:%02x:%02x:%02x:%02x"
 #define MACARGS(a) (a)[0], (a)[1], (a)[2], (a)[3], (a)[4], (a)[5]
@@ -77,6 +79,10 @@ void ldn_control_init(esp_netif_t *netif, const unsigned char host[6])
        adapter disappear. Harmless when no Pico is attached. */
     ldn_wire_set_rfu_handler(host_to_pico);
     pico_link_start(1);
+    /* Standalone by default: a host closing the USB port resets this chip, and a
+       manually started bridge does not survive that -- the GBA then sees the room
+       disappear. LDN_BRIDGE_STOP hands control back for the PC-relay path. */
+    pia_bridge_start();
 }
 
 void ldn_control_link(bool connected)
@@ -130,6 +136,48 @@ static void command(const char *line)
         ldn_wire_set_rfu_handler(host_to_pico);
         pico_link_start(1);
         printf("LDN_PICO_STARTED\n"); return;
+    }
+    /* Key provisioning. Values are written straight to NVS and never echoed, logged
+       or returned -- only which names are present is observable. */
+    if (!strncmp(line, "LDN_KEY ", 8)) {
+        char name[40]; char hex[40];
+        if (sscanf(line + 8, "%39s %39s", name, hex) != 2 || strlen(hex) != 32) {
+            printf("LDN_KEY_BAD format\n"); return;
+        }
+        uint8_t value[16];
+        for (int i = 0; i < 16; ++i) {
+            int hi = nibble(hex[2 * i]), lo = nibble(hex[2 * i + 1]);
+            if (hi < 0 || lo < 0) { printf("LDN_KEY_BAD hex\n"); return; }
+            value[i] = (uint8_t)(hi << 4 | lo);
+        }
+        const bool ok = ldn_keys_store(name, value);
+        memset(value, 0, sizeof(value));
+        memset(hex, 0, sizeof(hex));
+        printf(ok ? "LDN_KEY_OK %s\n" : "LDN_KEY_BAD name\n", name);
+        return;
+    }
+    if (!strcmp(line, "LDN_KEYS")) {
+        bool kek = false, gen = false, m00 = false, m12 = false;
+        ldn_keys_status(&kek, &gen, &m00, &m12);
+        printf("LDN_KEYS kek=%d gen=%d master00=%d master12=%d protocol1=%d protocol3=%d\n",
+               kek, gen, m00, m12, ldn_keys_supports(1), ldn_keys_supports(3));
+        return;
+    }
+    if (!strcmp(line, "LDN_KEYS_ERASE")) { ldn_keys_erase(); printf("LDN_KEYS_ERASED\n"); return; }
+    if (!strcmp(line, "LDN_BRIDGE_START")) { pia_bridge_start(); printf("LDN_BRIDGE_STARTED\n"); return; }
+    if (!strcmp(line, "LDN_BRIDGE_STOP")) { pia_bridge_stop(); printf("LDN_BRIDGE_STOPPED\n"); return; }
+    if (!strcmp(line, "LDN_BRIDGE_STATUS")) {
+        static char report[384];
+        pia_bridge_status(report, sizeof(report));
+        printf("LDN_BRIDGE_STATUS %s\n", report);
+        return;
+    }
+    if (!strcmp(line, "LDN_PIA_TEST")) {
+        extern int pia_selftest(char *out, size_t cap);
+        static char report[192];
+        pia_selftest(report, sizeof(report));
+        printf("LDN_PIA_TEST %s\n", report);
+        return;
     }
     if (!strcmp(line, "LDN_PICO_BOOTSEL")) { pico_link_bootsel(); printf("LDN_PICO_BOOTSEL_SENT\n"); return; }
     if (!strcmp(line, "LDN_PICO_DATA")) {
@@ -198,7 +246,7 @@ static void command(const char *line)
         return;
     }
     if (strncmp(line, "LDN_TX ", 7)) { printf("LDN_ERROR UNKNOWN_COMMAND\n"); return; }
-    static uint8_t frame[FRAME_MAX];
+    static uint8_t body[FRAME_MAX];
     const char *hex = line + 7;
     size_t n = strlen(hex);
     int result = ESP_ERR_INVALID_ARG;
@@ -206,24 +254,40 @@ static void command(const char *line)
     for (size_t i = 0; i < n / 2; ++i) {
         int hi = nibble(hex[2 * i]), lo = nibble(hex[2 * i + 1]);
         if (hi < 0 || lo < 0) goto done;
-        frame[14 + i] = (hi << 4) | lo;
+        body[i] = (uint8_t)((hi << 4) | lo);
     }
-    static const uint8_t prefix[] = {0x00, 0x22, 0xaa, 0x01, 0x02};
-    if (memcmp(frame + 14, prefix, sizeof(prefix))) goto done;
-    result = ESP_ERR_INVALID_STATE;
-    if (!atomic_load(&s_connected)) goto done;
-    memcpy(frame, s_host, 6); memcpy(frame + 6, s_mac, 6);
-    frame[12] = 0x88; frame[13] = 0xb7;
-    result = esp_wifi_internal_tx(WIFI_IF_STA, frame, 14 + n / 2);
+    result = ldn_control_tx_action(body, n / 2);
 done:
     printf("LDN_TX_RESULT %d\n", result);
+}
+
+int ldn_control_tx_action(const uint8_t *body, size_t length)
+{
+    static const uint8_t prefix[] = {0x00, 0x22, 0xaa, 0x01, 0x02};
+    if (length < 5 || length + 14 > FRAME_MAX || memcmp(body, prefix, sizeof(prefix))) return ESP_ERR_INVALID_ARG;
+    if (!atomic_load(&s_connected)) return ESP_ERR_INVALID_STATE;
+    static uint8_t frame[FRAME_MAX];
+    memcpy(frame, s_host, 6);
+    memcpy(frame + 6, s_mac, 6);
+    frame[12] = 0x88; frame[13] = 0xb7;
+    memcpy(frame + 14, body, length);
+    return esp_wifi_internal_tx(WIFI_IF_STA, frame, 14 + length);
+}
+
+bool ldn_control_connected(void) { return atomic_load(&s_connected); }
+void ldn_control_mac(uint8_t out[6]) { memcpy(out, s_mac, 6); }
+
+static void (*s_action_handler)(const uint8_t source[6], const uint8_t *body, size_t length);
+void ldn_control_set_action_handler(void (*handler)(const uint8_t source[6], const uint8_t *body, size_t length))
+{
+    s_action_handler = handler;
 }
 
 void ldn_control_poll(void)
 {
     /* Hand queued adapter frames to the host from THIS task: the wire layer
        serialises through static buffers and the adapter runs on another core. */
-    if (ldn_wire_active()) {
+    if (ldn_wire_active() && !pia_bridge_running()) {
         /* Anything queued before the host attached describes a state that has since
            moved on; a replayed WrongCable would abort a session that is now fine. */
         static bool flushed;
@@ -246,7 +310,8 @@ void ldn_control_poll(void)
         size_t n = frame.length - 14;
         for (size_t i = 0; i < n; ++i) { hex[2*i] = digits[frame.bytes[14+i] >> 4]; hex[2*i+1] = digits[frame.bytes[14+i] & 15]; }
         hex[2*n] = 0;
-        printf("LDN_RX " MACSTR " %s\n", MACARGS(frame.bytes + 6), hex);
+        if (s_action_handler) s_action_handler(frame.bytes + 6, frame.bytes + 14, n);
+        else printf("LDN_RX " MACSTR " %s\n", MACARGS(frame.bytes + 6), hex);
     }
     static char line[3016];
     static size_t used;

@@ -194,6 +194,25 @@ tx_done:
     return true;
 }
 
+static void (*s_handler)(const char *ip, const uint8_t *data, size_t length);
+
+void ldn_udp_set_handler(void (*handler)(const char *ip, const uint8_t *data, size_t length))
+{
+    s_handler = handler;
+}
+
+void ldn_udp_heartbeat(void) { s_heartbeat = esp_timer_get_time(); }
+
+bool ldn_udp_send(const char *ip, const uint8_t *data, size_t length)
+{
+    if (s_socket < 0 || length > PAYLOAD_MAX) return false;
+    struct sockaddr_in dest = {.sin_family = AF_INET, .sin_port = htons(PIA_PORT)};
+    if (!inet_aton(ip, &dest.sin_addr)) return false;
+    bool ok = sendto(s_socket, data, length, 0, (struct sockaddr *)&dest, sizeof(dest)) == (int)length;
+    if (ok) ++s_tx; else ++s_rejected;
+    return ok;
+}
+
 void ldn_udp_poll(bool connected)
 {
     if (s_socket < 0) return;
@@ -218,9 +237,10 @@ void ldn_udp_poll(bool connected)
         bool known = false;
         for (int i = 0; i < PEERS_MAX; ++i) known |= s_peers[i].addr == source.sin_addr.s_addr;
         if (n > PAYLOAD_MAX || source.sin_port != htons(PIA_PORT) || !known) { ++s_rejected; continue; }
+        ++s_rx;
+        if (s_handler) { s_handler(inet_ntoa(source.sin_addr), bytes, (size_t)n); continue; }
         for (int i = 0; i < n; ++i) { hex[2 * i] = digits[bytes[i] >> 4]; hex[2 * i + 1] = digits[bytes[i] & 15]; }
         hex[n * 2] = 0;
-        ++s_rx;
         printf("LDN_DATAGRAM %s %s\n", inet_ntoa(source.sin_addr), hex);
     }
 }
