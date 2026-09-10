@@ -9,8 +9,9 @@ public sealed class GbLinkDevice : IDisposable
 {
     public const byte ChannelCommand = 0, ChannelData = 1, ChannelStatus = 2;
     public const byte SetMode = 0x00, Cancel = 0x01, GetFirmwareInfo = 0x0F, ModeWireless = 0x05;
-    private readonly SerialPort port;
-    private readonly Thread reader;
+    private readonly SerialPort? port;
+    private readonly Action<byte[]>? tunnel;
+    private readonly Thread? reader;
     private readonly object writeLock = new();
     private readonly Queue<byte[]> data = [];
     private readonly Queue<ushort> statuses = [];
@@ -22,41 +23,50 @@ public sealed class GbLinkDevice : IDisposable
         port.Open(); port.DiscardInBuffer();
         reader = new(ReadLoop) { IsBackground = true, Name = "gblink-reader" }; reader.Start();
     }
+    // Tunnelled: the adapter is wired to the LDN device rather than this PC, so the same frames
+    // ride that link instead of a port of our own. Frames arrive by Feed, not a reader thread.
+    public GbLinkDevice(Action<byte[]> write) => tunnel = write;
+    private int state, channel, length, position;
+    private readonly byte[] payload = new byte[65536];
+    // Frame reassembly, driven either by our own reader thread or by whoever owns the tunnel.
+    public void Feed(ReadOnlySpan<byte> bytes)
+    {
+        foreach (byte b in bytes)
+        {
+            switch (state)
+            {
+                case 0: if (b == (byte)'G') state = 1; break;
+                case 1: state = b == (byte)'B' ? 2 : b == (byte)'G' ? 1 : 0; break;
+                case 2: channel = b; state = 3; break;
+                case 3: length = b; state = 4; break;
+                case 4:
+                    length |= b << 8; position = 0;
+                    if (length > payload.Length) { BadFrames++; state = 0; }
+                    else if (length == 0) { Dispatch(channel, []); state = 0; }
+                    else state = 5;
+                    break;
+                case 5:
+                    payload[position++] = b;
+                    if (position == length) { Dispatch(channel, payload[..length]); state = 0; }
+                    break;
+            }
+        }
+    }
     private void ReadLoop()
     {
-        int state = 0, channel = 0, length = 0, position = 0; var payload = new byte[65536]; var chunk = new byte[4096];
+        var chunk = new byte[4096];
         while (running)
         {
             // A port being torn down or re-enumerated can report a negative count; treat anything
             // non-positive as "nothing to read" rather than handing it to Read.
             int available, count;
-            try { available = port.BytesToRead; } catch (Exception) { break; }
+            try { available = port!.BytesToRead; } catch (Exception) { break; }
             if (available <= 0) { Thread.Sleep(1); continue; }
             try { count = port.Read(chunk, 0, Math.Min(available, chunk.Length)); }
             catch (TimeoutException) { continue; }
             catch (Exception) { break; }
             if (count <= 0) continue;
-            for (int i = 0; i < count; i++)
-            {
-                byte b = chunk[i];
-                switch (state)
-                {
-                    case 0: if (b == (byte)'G') state = 1; break;
-                    case 1: state = b == (byte)'B' ? 2 : b == (byte)'G' ? 1 : 0; break;
-                    case 2: channel = b; state = 3; break;
-                    case 3: length = b; state = 4; break;
-                    case 4:
-                        length |= b << 8; position = 0;
-                        if (length > payload.Length) { BadFrames++; state = 0; }
-                        else if (length == 0) { Dispatch(channel, []); state = 0; }
-                        else state = 5;
-                        break;
-                    case 5:
-                        payload[position++] = b;
-                        if (position == length) { Dispatch(channel, payload[..length]); state = 0; }
-                        break;
-                }
-            }
+            Feed(chunk.AsSpan(0, count));
         }
     }
     private void Dispatch(int channel, byte[] payload)
@@ -72,7 +82,7 @@ public sealed class GbLinkDevice : IDisposable
         var frame = new byte[5 + payload.Length];
         frame[0] = (byte)'G'; frame[1] = (byte)'B'; frame[2] = channel; frame[3] = (byte)payload.Length; frame[4] = (byte)(payload.Length >> 8);
         payload.CopyTo(frame.AsSpan(5));
-        lock (writeLock) port.Write(frame, 0, frame.Length);
+        lock (writeLock) { if (tunnel != null) tunnel(frame); else port!.Write(frame, 0, frame.Length); }
     }
     public void Command(params byte[] bytes) => Send(ChannelCommand, bytes);
     // The firmware's data receive buffer is one 64-byte transport chunk; its RFU1 parser reassembles across chunks.
@@ -80,11 +90,15 @@ public sealed class GbLinkDevice : IDisposable
     { for (int o = 0; o < bytes.Length; o += 64) Send(ChannelData, bytes.Slice(o, Math.Min(64, bytes.Length - o))); }
     public bool TryDequeueData(out byte[] frame) { lock (data) return data.TryDequeue(out frame!); }
     public bool TryDequeueStatus(out ushort status) { lock (data) return statuses.TryDequeue(out status); }
+    // Set when tunnelled: frames only arrive while the link's owner is pumped, so any wait here
+    // has to drive it rather than sleeping through the reply.
+    public Action? Pump { get; set; }
     public byte[]? FirmwareInfo(double timeout = 1.5)
     {
         Command(GetFirmwareInfo); var watch = System.Diagnostics.Stopwatch.StartNew();
         while (watch.Elapsed.TotalSeconds < timeout)
         {
+            Pump?.Invoke();
             if (TryDequeueData(out var frame)) { if (frame.Length >= 4 && frame[0] == GetFirmwareInfo) return frame; continue; }
             Thread.Sleep(2);
         }
@@ -97,7 +111,7 @@ public sealed class GbLinkDevice : IDisposable
         0xFF08 => "DeviceReady", 0xFF09 => "EmuTradeSessionFinished", 0xFF0A => "GBModeActive", 0xFF0B => "GBPrinterModeActive",
         0xFF0C => "GBSessionFinished", 0xFF0D => "WrongCable", 0xFFFF => "StatusDebug", _ => $"status 0x{status:x4}",
     };
-    public void Dispose() { running = false; try { port.Dispose(); } catch (Exception) { } }
+    public void Dispose() { running = false; try { port?.Dispose(); } catch (Exception) { } }
 }
 
 // gpsp-compatible "RFU1" inter-adapter frames (the firmware's network side). Header words are big-endian;

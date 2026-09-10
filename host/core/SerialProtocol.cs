@@ -73,9 +73,15 @@ public sealed class SerialDevice : IDisposable
     public void Pump()
     {
         if (!stopping) cancel.ThrowIfCancellationRequested();
-        int available = Math.Min(port.BytesToRead, 65536);
-        if (available == 0) return;
-        var data = new byte[available]; int count = port.Read(data, 0, data.Length);
+        // A port being torn down or re-enumerated (a board unplugged mid-run) can report a negative
+        // count; treat anything non-positive as "nothing to read" rather than sizing a buffer with it.
+        int available, count;
+        try { available = Math.Min(port.BytesToRead, 65536); } catch (Exception) { return; }
+        if (available <= 0) return;
+        var data = new byte[available];
+        try { count = port.Read(data, 0, data.Length); }
+        catch (TimeoutException) { return; }
+        if (count <= 0) return;
         for (int i = 0; i < count; i++)
         {
             if (data[i] != 0)
@@ -92,6 +98,7 @@ public sealed class SerialDevice : IDisposable
                 string text = Encoding.UTF8.GetString(frame.Payload);
                 if (text == "LDN_DONE") done.Add(frame.Request); else lines.Add(text);
             }
+            else if (frame.Kind == 6) RfuReceived?.Invoke(frame.Payload);
             else if (frame.Kind is 3 or 5)
             {
                 if (events.Count >= 1024) throw new IOException("Serial receive queue is full");
@@ -99,6 +106,10 @@ public sealed class SerialDevice : IDisposable
             }
         }
     }
+    // Set when the GB-Link adapter is wired to this device instead of a port of the PC's own.
+    public Action<byte[]>? RfuReceived { get; set; }
+    public void SendRfu(byte[] bytes) => Write(SerialCodec.Encode(new(7, 0, Session, bytes)));
+
     public List<string> Command(string command, double timeout = 3)
     {
         uint id = ++sequence; var lines = new List<string>(); responses.Add(id, lines);

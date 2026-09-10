@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using Frlg.Trade.Core;
 using PKHeX.Core;
@@ -102,16 +103,25 @@ if (args.Length >= 2 && args[0] is "--gblink" or "--leader")
     new LeaderBridge(gblink, Console.WriteLine).Run(leaderName, activity, started, args[0] == "--leader", accept, seconds, cancellation.Token);
     return;
 }
-if (args.Length >= 3 && args[0] == "--bridge")
+if (args.Length >= 2 && args[0] == "--bridge")
 {
-    // --bridge <ldn port> <gblink port> [--name LEADER]: real GBA on the GB-Link joins the Switch's Leader room.
+    // --bridge <ldn port> [gblink port] [--name LEADER]: real GBA on the GB-Link joins the Switch's
+    // Leader room. Omit the GB-Link port when it is wired to the LDN device instead of this PC.
     string? leaderName = null;
-    for (int i = 3; i + 1 < args.Length; i++) if (args[i] == "--name") leaderName = args[i + 1];
+    string? gblinkPort = args.Length >= 3 && !args[2].StartsWith("--") ? args[2] : null;
+    for (int i = 2; i + 1 < args.Length; i++) if (args[i] == "--name") leaderName = args[i + 1];
     using var cancellation = new CancellationTokenSource();
     Console.CancelKeyPress += (_, e) => { e.Cancel = true; cancellation.Cancel(); };
+    // Also cancel on SIGTERM, so a restart from a supervisor still runs the shutdown that leaves the
+    // Switch's room. Killed without it, our membership lingers and the Switch drops the next join.
+    using var term = PosixSignalRegistration.Create(PosixSignal.SIGTERM, context =>
+    {
+        context.Cancel = true; cancellation.Cancel();
+        for (int i = 0; i < 50 && !SwitchBridge.ShutdownComplete; i++) Thread.Sleep(100);
+    });
     string path = Path.Combine(root, "local/runs", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + "-bridge");
     Console.WriteLine($"run: {path}");
-    new SwitchBridge(Console.WriteLine).Run(args[1], args[2], leaderName, path, cancellation.Token);
+    new SwitchBridge(Console.WriteLine).Run(args[1], gblinkPort, leaderName, path, cancellation.Token);
     return;
 }
 if (args.Length >= 2 && args[0] == "--replay-bridge")

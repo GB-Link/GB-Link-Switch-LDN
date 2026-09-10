@@ -51,6 +51,21 @@ static void send_frame(uint8_t kind, const uint8_t *payload, size_t length)
     esp32_transport_write(encoded, out);
 }
 
+static void (*rfu_handler)(const uint8_t *, size_t);
+
+void ldn_wire_set_rfu_handler(void (*handler)(const uint8_t *, size_t)) { rfu_handler = handler; }
+
+void ldn_wire_send_rfu(const uint8_t *frame, size_t length)
+{
+    /* Unsolicited, like a datagram: not tied to a request. Must be called from
+       the same task as the rest of the wire layer -- send_frame uses statics. */
+    if (!active) return;
+    const uint32_t saved = request;
+    request = 0;
+    send_frame(6, frame, length);
+    request = saved;
+}
+
 bool ldn_wire_active(void) { return active; }
 void ldn_wire_session(uint32_t value) { session = value; }
 void ldn_wire_enable(void)
@@ -123,6 +138,9 @@ void ldn_wire_feed(uint8_t value, void (*dispatch)(const char *))
             command[start++] = hex[frame[12 + i] >> 4]; command[start++] = hex[frame[12 + i] & 15];
         }
         command[start] = 0;
+    } else if (frame[1] == 7 && length) {
+        if (rfu_handler) rfu_handler(frame + 12, length);
+        request = 0; return;
     } else { request = 0; return; }
     if (incoming_session != session && strcmp(command, "LDN_HELLO") && strncmp(command, "LDN_BEGIN ", 10))
         ldn_wire_printf("LDN_ERROR STALE_SESSION\n");

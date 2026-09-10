@@ -8,11 +8,13 @@
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
-#include "esp32_transport.h"
+#include "s3_transport.h"
 #include "ldn_control.h"
 #include "ldn_udp.h"
 #include "ldn_session.h"
 #include "ldn_wire.h"
+#include "rfu_link.h"
+#include "rfu_section.h"
 #define printf ldn_wire_printf
 #define MACSTR "%02x:%02x:%02x:%02x:%02x:%02x"
 #define MACARGS(a) (a)[0], (a)[1], (a)[2], (a)[3], (a)[4], (a)[5]
@@ -24,7 +26,6 @@ static QueueHandle_t s_rx;
 static uint8_t s_host[6], s_mac[6];
 static atomic_bool s_connected;
 static atomic_uint s_dropped, s_rx_count, s_tx_ok, s_tx_failed, s_air_data;
-static int s_pending_baud;
 
 static esp_err_t control_rx(void *buffer, uint16_t length, void *eb)
 {
@@ -62,9 +63,14 @@ void ldn_control_init(esp_netif_t *netif, const unsigned char host[6])
     ESP_ERROR_CHECK(esp_wifi_get_mac(WIFI_IF_STA, s_mac));
     s_rx = xQueueCreate(8, sizeof(control_frame_t));
     ESP_ERROR_CHECK(s_rx ? ESP_OK : ESP_ERR_NO_MEM);
-    esp32_transport_init();
+    s3_transport_init();
     ESP_ERROR_CHECK(esp_wifi_set_tx_done_cb(tx_done));
-    printf("LDN_ESP32_READY transport=uart heap=%" PRIu32 "\n", esp_get_free_heap_size());
+    printf("LDN_S3_READY transport=usb-serial-jtag heap=%" PRIu32 "\n", esp_get_free_heap_size());
+    /* Bring the adapter up automatically: a host closing the port resets the
+       chip, and a manual LDN_RFU_START does not survive that -- the GBA then
+       sees its adapter disappear. Harmless when no cable is attached. */
+    ldn_wire_set_rfu_handler(rfu_section_feed_bytes);
+    rfu_section_start(1);
 }
 
 void ldn_control_link(bool connected)
@@ -112,19 +118,61 @@ static void command(const char *line)
     }
     if (!strcmp(line, "LDN_STOP")) { ldn_session_stop(); printf("LDN_STOPPED\n"); return; }
     if (!strcmp(line, "LDN_QUIET")) { printf("LDN_QUIET_OK\n"); return; }
+    /* Wireless-adapter (RFU) mode: claims the GBA link pins and pins a spinning
+       task to the core Wi-Fi is not on. Opt-in, so the LDN-only path is unchanged. */
+    if (!strcmp(line, "LDN_RFU_START")) {
+        ldn_wire_set_rfu_handler(rfu_section_feed_bytes);
+        rfu_section_start(1);
+        printf("LDN_RFU_STARTED\n"); return;
+    }
+    if (!strcmp(line, "LDN_RFU_CSTEST")) {
+        /* Drives CS: only safe when the GBA is idle, never while traffic flows. */
+        bool lo = false, hi = false;
+        const bool ok = rfu_link_cs_controllable(&lo, &hi);
+        printf("LDN_RFU_CS controllable=%d low=%d high=%d\n", ok ? 1 : 0, lo ? 1 : 0, hi ? 1 : 0);
+        return;
+    }
+    if (!strcmp(line, "LDN_RFU_LOOPBACK")) {
+        uint16_t bits = 0; uint32_t word = 0;
+        const bool ok = rfu_link_loopback_test(&bits, &word);
+        printf("LDN_RFU_LOOPBACK ok=%d bits=%u word=%08" PRIx32 "\n", ok ? 1 : 0, bits, word);
+        return;
+    }
+    if (!strcmp(line, "LDN_RFU_STOP")) { rfu_section_stop(); printf("LDN_RFU_STOPPED\n"); return; }
+    if (!strcmp(line, "LDN_RFU_STATS")) {
+        uint32_t sw = 0, mw = 0, partial = 0, in = 0, out = 0;
+        rfu_section_stats(&sw, &mw, &partial, &in, &out);
+        bool enabled = false; int role = 0; uint8_t levels = 0, comstate = 0;
+        rfu_section_state(&enabled, &role, &levels, &comstate);
+        uint32_t at0 = 0, late = 0; uint8_t lastbit = 0;
+        rfu_link_partial_detail(&at0, &late, &lastbit);
+        printf("LDN_RFU_PARTIAL false_start=%" PRIu32 " too_slow=%" PRIu32 " last_bit=%u glitches=%" PRIu32 "\n",
+               at0, late, lastbit, rfu_link_glitches());
+        uint32_t words[6]; const uint8_t nw = rfu_link_word_log(words, 6);
+        if (nw) {
+            printf("LDN_RFU_WORDS");
+            for (uint8_t i = 0; i < nw; ++i) printf(" %08" PRIx32, words[i]);
+            printf("\n");
+        }
+        printf("LDN_RFU_RATE polls=%" PRIu32 " empty_frames=%" PRIu32 " last_bits=%u\n",
+               rfu_link_polls(), rfu_link_empty_frames(), rfu_link_last_trans_bits());
+        printf("LDN_RFU_STATE enabled=%d role=%s comstate=%u sc=%d so=%d si=%d sd=%d\n",
+               enabled ? 1 : 0, role ? "adapter-master" : "gba-master", comstate,
+               (levels & 1) ? 1 : 0, (levels & 2) ? 1 : 0, (levels & 4) ? 1 : 0, (levels & 8) ? 1 : 0);
+        printf("LDN_RFU_STATS slave_words=%" PRIu32 " master_words=%" PRIu32 " partial=%" PRIu32
+               " net_in=%" PRIu32 " net_out=%" PRIu32 "\n", sw, mw, partial, in, out);
+        return;
+    }
     if (!strcmp(line, "LDN_BAUD 921600") || !strcmp(line, "LDN_BAUD 115200")) {
-        const int baud = atoi(line + 9);
-        printf("LDN_BAUD_READY %d\n", baud);
-        /* In binary mode the DONE frame still has to go out at the old rate; switch after it. */
-        if (ldn_wire_active()) { s_pending_baud = baud; return; }
-        fflush(stdout); esp32_transport_set_baud(baud); return;
+        /* USB line coding does not change physical throughput. Keep host v1 compatibility. */
+        printf("LDN_BAUD_READY %s\n", line + 9); return;
     }
     if (ldn_udp_command(line, atomic_load(&s_connected))) return;
     if (!strcmp(line, "LDN_STATUS")) {
         printf("LDN_LINK %u " MACSTR "\n", atomic_load(&s_connected), MACARGS(s_mac));
-        printf("LDN_ESP32_STATS tx_ok=%u tx_failed=%u ethernet_rx=%u air_rx=%u dropped=%u uart_dropped=%" PRIu32 " heap=%" PRIu32 "\n",
+        printf("LDN_S3_STATS tx_ok=%u tx_failed=%u ethernet_rx=%u air_rx=%u dropped=%u usb_dropped=%" PRIu32 " heap=%" PRIu32 "\n",
             atomic_load(&s_tx_ok), atomic_load(&s_tx_failed), atomic_load(&s_rx_count), atomic_load(&s_air_data),
-            atomic_load(&s_dropped), esp32_transport_dropped(), esp_get_free_heap_size());
+            atomic_load(&s_dropped), s3_transport_dropped(), esp_get_free_heap_size());
         return;
     }
     if (strncmp(line, "LDN_TX ", 7)) { printf("LDN_ERROR UNKNOWN_COMMAND\n"); return; }
@@ -151,6 +199,15 @@ done:
 
 void ldn_control_poll(void)
 {
+    /* Hand queued adapter frames to the host from THIS task: the wire layer
+       serialises through static buffers and the adapter runs on another core. */
+    if (ldn_wire_active()) {
+        static uint8_t rfu_frame[104];
+        size_t rfu_len = 0;
+        for (int i = 0; i < 8 && rfu_section_poll_outbound(rfu_frame, sizeof(rfu_frame), &rfu_len); ++i)
+            ldn_wire_send_rfu(rfu_frame, rfu_len);
+    }
+
     static bool previous;
     bool connected = atomic_load(&s_connected);
     if (previous != connected) {
@@ -169,13 +226,9 @@ void ldn_control_poll(void)
     static size_t used;
     static bool overflow;
     static uint8_t bytes[8192];
-    int n = esp32_transport_read(bytes, sizeof(bytes));
+    int n = s3_transport_read(bytes, sizeof(bytes));
     for (int i = 0; i < n; ++i) {
-        if (ldn_wire_active()) {
-            ldn_wire_feed(bytes[i], command);
-            if (s_pending_baud) { esp32_transport_set_baud(s_pending_baud); s_pending_baud = 0; }
-            continue;
-        }
+        if (ldn_wire_active()) { ldn_wire_feed(bytes[i], command); continue; }
         if (bytes[i] == '\r') continue;
         if (bytes[i] == '\n') {
             line[used] = 0;

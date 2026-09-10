@@ -468,7 +468,9 @@ static void run_private_join(void)
             ldn_session_stop(); printf("LDN_ERROR ASSOCIATION_TIMEOUT\n");
         }
         if (now - last_advertisement >= 250000) { export_advertisement(); last_advertisement = now; }
-        vTaskDelay(pdMS_TO_TICKS(2));
+        /* The GBA<->Switch protocol ticks every ~16.7 ms, so every millisecond parked
+           here is latency the Switch sees as a stale view of the child. */
+        vTaskDelay(pdMS_TO_TICKS(1));
     }
 }
 
