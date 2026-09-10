@@ -44,21 +44,55 @@ public sealed class GbLinkMonitor(GbLinkDevice device, Action<string> log)
 // verbatim both ways.
 public sealed class SwitchBridge(Action<string> log)
 {
-    public void Run(string ldnPort, string gblinkPort, string? leaderName, string runPath, CancellationToken cancel)
+    // Names for the link commands worth calling out live, so a session can be correlated against what
+    // the games are showing on screen.
+    private static readonly Dictionary<int, string> Milestones = new()
     {
+        [0xaabb] = "Ready (mon selected)", [0xdddd] = "SetMons", [0xbbbb] = "InitBlock",
+        [0xccdd] = "Start trade", [0xabcd] = "ReadyFinish", [0xdcba] = "ConfirmFinish",
+        [0xeeaa] = "Cancel", [0xddee] = "PlayerCancel", [0xeecc] = "PartnerCancel", [0x5f00] = "CLOSE LINK",
+    };
+    private static string? Describe(ReadOnlySpan<byte> words)
+    {
+        if (words.Length < 4) return null;
+        int cmd = words[0] | (words[1] << 8), value = words[2] | (words[3] << 8);
+        if ((cmd & 0xFF00) == 0x6600) return $"standby round {value}";
+        if ((cmd & 0xFF00) == 0x5F00) return "CLOSE LINK";
+        return Milestones.TryGetValue(cmd, out var name) ? name : null;
+    }
+
+    // Set once the session has torn down (LDN_STOP sent), so a signal handler can wait for a clean exit.
+    public static volatile bool ShutdownComplete;
+
+    public void Run(string ldnPort, string? gblinkPort, string? leaderName, string runPath, CancellationToken cancel)
+    {
+        ShutdownComplete = false;
         Directory.CreateDirectory(runPath);
         using var native = new StreamWriter(Path.Combine(runPath, "native.log")) { AutoFlush = true };
         using var rfuLog = new StreamWriter(Path.Combine(runPath, "rfu1.log")) { AutoFlush = true };
         void Record(string text) { native.WriteLine($"{DateTimeOffset.Now:O} {text}"); log(text); }
         var keys = KeyFile.LoadDefault();
-        using var gblink = new GbLinkDevice(gblinkPort);
-        var info = gblink.FirmwareInfo(); Record(info == null ? "GB-Link: no firmware info reply" : $"GB-Link firmware {info[1]}.{info[2]}.{info[3]}");
+        // With no GB-Link port of its own the adapter is wired to the LDN device instead, and its
+        // frames ride that link as kinds 6/7. That device also owns wireless-mode entry: it boots
+        // independently of this host, and the GBA only probes for an adapter at power-on, so
+        // re-entering the mode from here would strand a GBA that had already found it.
+        bool tunnelled = string.IsNullOrEmpty(gblinkPort);
         using var device = new SerialDevice(ldnPort, cancel);
+        using var gblink = tunnelled ? new GbLinkDevice(device.SendRfu) : new GbLinkDevice(gblinkPort!);
         bool started = false, wirelessMode = false;
         try
         {
-            LeaderBridge.EnterWirelessMode(gblink, Record, cancel); wirelessMode = true;
-            device.Handshake(); started = true; Record($"LDN device: {device.Model}");
+            if (tunnelled)
+            {
+                device.RfuReceived = bytes => gblink.Feed(bytes); gblink.Pump = device.Pump;
+                device.Handshake(); started = true; Record($"LDN device: {device.Model} (GB-Link wired to it)");
+            }
+            else
+            {
+                LeaderBridge.EnterWirelessMode(gblink, Record, cancel); wirelessMode = true;
+                device.Handshake(); started = true; Record($"LDN device: {device.Model}");
+            }
+            var info = gblink.FirmwareInfo(); Record(info == null ? "GB-Link: no firmware info reply" : $"GB-Link firmware {info[1]}.{info[2]}.{info[3]}");
             // Wait for the room rather than racing a timer: the GBA side is already live, so the user can
             // host on the Switch whenever they are ready.
             Record("Waiting for the Switch to host a FireRed Leader room");
@@ -86,9 +120,16 @@ public sealed class SwitchBridge(Action<string> log)
                 (data, destination) => { device.SendDatagram(data, destination); Capture("out", data, room.Ours.Ip, destination); });
             relay.Log += Record;
             bool childConnected = false; int hostFrames = 0, childFrames = 0, droppedBeforeConnect = 0;
+            double lastChildTraffic = 0, silenceReported = 0;
             relay.HostPayload = payload =>
             {
                 if (!childConnected) { droppedBeforeConnect++; return; }
+                if (payload.Length >= 17)
+                    for (int off = 3; off + 14 <= payload.Length; off += 14)
+                    {
+                        var note = Describe(payload.AsSpan(off, 14));
+                        if (note != null) Record($"{clock.Elapsed.TotalSeconds,7:F3} Switch -> {note} (slot {(off - 3) / 14})");
+                    }
                 var frame = Rfu1.HostSendFrame(payload); gblink.SendData(frame); Rfu("host->gba", frame); hostFrames++;
                 if (hostFrames <= 40 && !payload.All(b => b == 0)) Record($"{clock.Elapsed.TotalSeconds,7:F3} Switch -> {Convert.ToHexString(payload)}");
             };
@@ -135,6 +176,14 @@ public sealed class SwitchBridge(Action<string> log)
                         case Rfu1.ClientSend:
                             var payload = frame.Data; childFrames++;
                             if (!childConnected) { Record($"{now,7:F3} CLIENT_SEND before connect, ignored: {Convert.ToHexString(payload)}"); break; }
+                            if (payload.Length >= 6 && payload[0] == 0x0E && payload[1] == 0x10)
+                            {
+                                var note = Describe(payload.AsSpan(2));
+                                if (note != null) Record($"{now,7:F3} GBA -> {note}");
+                            }
+                            // "Real" means a game command: the child's idle frame still carries its 0e10
+                            // header, so testing the whole payload counts idle as traffic.
+                            if (payload.Length > 2 && payload.AsSpan(2).ToArray().Any(b => b != 0)) lastChildTraffic = now;
                             relay.Enqueue(payload);
                             if (childFrames <= 40 && !payload.All(b => b == 0)) Record($"{now,7:F3} GBA -> {Convert.ToHexString(payload)} {LeaderBridge.DescribeNi(payload)}");
                             break;
@@ -155,12 +204,20 @@ public sealed class SwitchBridge(Action<string> log)
                 }
                 if (now >= nextBeacon) { gblink.SendData(Rfu1.Bcast(leaderDevid, (byte)(childConnected ? 1 : 0), beacon)); nextBeacon = now + 0.5; }
                 if (now >= nextTick) { relay.Tick(); nextTick = now + 1 / 59.727; }
+                // Call out a stalled GBA as it happens: this is the window in which the Switch gives up on it.
+                if (childConnected && lastChildTraffic > 0 && now - lastChildTraffic > 2 && now - silenceReported > 5)
+                {
+                    silenceReported = now;
+                    Record($"{now,7:F3} GBA has sent nothing but idle for {now - lastChildTraffic:F1}s");
+                }
                 if (now >= nextSummary)
                 {
-                    Record($"{now,7:F3} summary connected={childConnected} pia rx={relay.ReceivedPackets} tx={relay.SentPackets} decryptFailed={relay.DecryptFailures} host->gba={hostFrames} gba->host={childFrames} queued={relay.Pending} highWater={relay.HighWater} coalesced={relay.Coalesced} repeated={relay.Repeated} overflow={relay.Overflow} reordered={relay.Reordered} holding={relay.Resequencing} clientAcks={monitor.ClientAcks} serialBad={device.BadFrames}/{gblink.BadFrames}");
+                    Record($"{now,7:F3} summary connected={childConnected} pia rx={relay.ReceivedPackets} tx={relay.SentPackets} decryptFailed={relay.DecryptFailures} host->gba={hostFrames} gba->host={childFrames} queued={relay.Pending} highWater={relay.HighWater} repeated={relay.Repeated} overflow={relay.Overflow} reordered={relay.Reordered} holding={relay.Resequencing} clientAcks={monitor.ClientAcks} serialBad={device.BadFrames}/{gblink.BadFrames}");
                     nextSummary = now + 5;
                 }
-                if (now - lastReceive > 30) throw new ConnectionException("Host communication timed out; the connection was closed.");
+                // Only guard against silence once the GBA is actually in session: before that the Switch
+                // may legitimately sit quiet for as long as it takes to walk the GBA through its menus.
+                if (childConnected && now - lastReceive > 30) throw new ConnectionException("Host communication timed out; the connection was closed.");
                 Thread.Sleep(1);
             }
             Record($"Host disconnected (WD): pia rx={relay.ReceivedPackets} tx={relay.SentPackets} host->gba={hostFrames} gba->host={childFrames}");
@@ -170,6 +227,7 @@ public sealed class SwitchBridge(Action<string> log)
         {
             if (wirelessMode) { try { gblink.Command(GbLinkDevice.Cancel); } catch (Exception) { } }
             if (started) { try { device.Stop(); } catch (Exception error) { Record("Stop acknowledgement unavailable: " + error.Message); } }
+                    ShutdownComplete = true;
         }
     }
     private static byte[] Rfu1Bytes(Rfu1.Frame f) => f.Type == Rfu1.Broadcast ? Rfu1.Bcast((ushort)(f.Header & 0xFFFF), (byte)(f.Header >> 16), f.BroadcastBytes())

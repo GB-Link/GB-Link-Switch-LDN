@@ -13,6 +13,7 @@
 #include "ldn_udp.h"
 #include "ldn_session.h"
 #include "ldn_wire.h"
+#include "pico_link.h"
 #define printf ldn_wire_printf
 #define MACSTR "%02x:%02x:%02x:%02x:%02x:%02x"
 #define MACARGS(a) (a)[0], (a)[1], (a)[2], (a)[3], (a)[4], (a)[5]
@@ -53,6 +54,13 @@ void ldn_control_sniff(const unsigned char *frame, size_t length)
         atomic_fetch_add(&s_air_data, 1);
 }
 
+/* Host frames reach the Pico verbatim: both ends speak the same 'GB' framing,
+   so nothing here needs to understand the adapter protocol. */
+static void host_to_pico(const uint8_t *frame, size_t length)
+{
+    pico_link_write(frame, length);
+}
+
 void ldn_control_init(esp_netif_t *netif, const unsigned char host[6])
 {
     s_netif = netif;
@@ -64,6 +72,11 @@ void ldn_control_init(esp_netif_t *netif, const unsigned char host[6])
     s3_transport_init();
     ESP_ERROR_CHECK(esp_wifi_set_tx_done_cb(tx_done));
     printf("LDN_S3_READY transport=usb-serial-jtag heap=%" PRIu32 "\n", esp_get_free_heap_size());
+    /* Bring the Pico link up automatically: a host closing the port resets the
+       chip, and a manual start does not survive that -- the GBA then sees its
+       adapter disappear. Harmless when no Pico is attached. */
+    ldn_wire_set_rfu_handler(host_to_pico);
+    pico_link_start(1);
 }
 
 void ldn_control_link(bool connected)
@@ -111,6 +124,67 @@ static void command(const char *line)
     }
     if (!strcmp(line, "LDN_STOP")) { ldn_session_stop(); printf("LDN_STOPPED\n"); return; }
     if (!strcmp(line, "LDN_QUIET")) { printf("LDN_QUIET_OK\n"); return; }
+    /* Pico link: the companion board owns the GBA cable and speaks the same
+       framed transport, so this side only starts, stops and counts it. */
+    if (!strcmp(line, "LDN_PICO_START")) {
+        ldn_wire_set_rfu_handler(host_to_pico);
+        pico_link_start(1);
+        printf("LDN_PICO_STARTED\n"); return;
+    }
+    if (!strcmp(line, "LDN_PICO_BOOTSEL")) { pico_link_bootsel(); printf("LDN_PICO_BOOTSEL_SENT\n"); return; }
+    if (!strcmp(line, "LDN_PICO_DATA")) {
+        for (uint8_t slot = 0; slot < 4; ++slot) {
+            uint8_t frame[24];
+            const uint8_t n = pico_link_frame_log(slot, frame, sizeof(frame));
+            if (!n) continue;
+            printf("LDN_PICO_DATA slot=%u", slot);
+            for (uint8_t i = 0; i < n; ++i) printf(" %02x", frame[i]);
+            printf("\n");
+        }
+        return;
+    }
+    if (!strcmp(line, "LDN_PICO_STATUS")) {
+        uint16_t codes[8];
+        const uint8_t n = pico_link_status_log(codes, 8);
+        printf("LDN_PICO_STATUS count=%u", n);
+        for (uint8_t i = 0; i < n; ++i) printf(" %04x", codes[i]);
+        printf("\n");
+        return;
+    }
+    if (!strcmp(line, "LDN_PICO_SWAP")) {
+        pico_link_swap();
+        printf("LDN_PICO_SWAPPED tx=%d rx=%d\n",
+               pico_link_swapped() ? PICO_LINK_PIN_RX : PICO_LINK_PIN_TX,
+               pico_link_swapped() ? PICO_LINK_PIN_TX : PICO_LINK_PIN_RX);
+        return;
+    }
+    if (!strcmp(line, "LDN_PICO_PROBE")) {
+        bool tx = false, rx = false;
+        pico_link_probe(&tx, &rx);
+        printf("LDN_PICO_PROBE pin%d_driven=%d pin%d_driven=%d\n",
+               PICO_LINK_PIN_TX, tx ? 1 : 0, PICO_LINK_PIN_RX, rx ? 1 : 0);
+        return;
+    }
+    if (!strcmp(line, "LDN_PICO_MODE")) { pico_link_set_mode(); printf("LDN_PICO_MODE_SENT\n"); return; }
+    if (!strcmp(line, "LDN_PICO_STOP")) { pico_link_stop(); printf("LDN_PICO_STOPPED\n"); return; }
+    if (!strcmp(line, "LDN_PICO_STATS")) {
+        uint32_t rx = 0, tx = 0, bytes = 0, resync = 0, dropped = 0;
+        pico_link_stats(&rx, &tx, &bytes, &resync, &dropped);
+        printf("LDN_PICO_STATS running=%d rx_frames=%" PRIu32 " tx_frames=%" PRIu32
+               " rx_bytes=%" PRIu32 " resync=%" PRIu32 " dropped=%" PRIu32 "\n",
+               pico_link_running() ? 1 : 0, rx, tx, bytes, resync, dropped);
+        printf("LDN_PICO_MODE set_mode_sent=%" PRIu32 " await_mode=%d wrong_cable=%d\n",
+               pico_link_mode_sent(), pico_link_await_mode() ? 1 : 0, pico_link_wrong_cable() ? 1 : 0);
+        printf("LDN_PICO_GBA active=%d\n", pico_link_gba_active() ? 1 : 0);
+        uint8_t first[21];
+        const uint8_t n = pico_link_first_frame(first, sizeof(first));
+        if (n) {
+            printf("LDN_PICO_FIRST");
+            for (uint8_t i = 0; i < n; ++i) printf(" %02x", first[i]);
+            printf("\n");
+        }
+        return;
+    }
     if (!strcmp(line, "LDN_BAUD 921600") || !strcmp(line, "LDN_BAUD 115200")) {
         /* USB line coding does not change physical throughput. Keep host v1 compatibility. */
         printf("LDN_BAUD_READY %s\n", line + 9); return;
@@ -147,6 +221,19 @@ done:
 
 void ldn_control_poll(void)
 {
+    /* Hand queued adapter frames to the host from THIS task: the wire layer
+       serialises through static buffers and the adapter runs on another core. */
+    if (ldn_wire_active()) {
+        /* Anything queued before the host attached describes a state that has since
+           moved on; a replayed WrongCable would abort a session that is now fine. */
+        static bool flushed;
+        if (!flushed) { pico_link_reset_inbound(); flushed = true; }
+        static uint8_t pico_frame[5 + PICO_LINK_MAX_PAYLOAD];
+        size_t pico_len = 0;
+        for (int i = 0; i < 32 && pico_link_poll_inbound(pico_frame, sizeof(pico_frame), &pico_len); ++i)
+            ldn_wire_send_rfu(pico_frame, pico_len);
+    }
+
     static bool previous;
     bool connected = atomic_load(&s_connected);
     if (previous != connected) {
