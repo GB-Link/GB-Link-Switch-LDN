@@ -1,6 +1,6 @@
 idf_component_register(
     SRCS "ldn_probe.c" "ldn_control.c" "ldn_udp.c" "ldn_wire.c" "s3_transport.c"
-         "pico_link.c" "pia_crypto.c" "pia_test.c" "ldn_keys.c" "pia_reliable.c" "pia_conn.c" "pia_link.c" "pia_bridge.c"
+         "pico_link.c" "trade_shim.c" "pia_crypto.c" "pia_test.c" "ldn_keys.c" "pia_reliable.c" "pia_conn.c" "pia_link.c" "pia_bridge.c"
     INCLUDE_DIRS "."
     REQUIRES esp_event esp_netif esp_wifi esp_timer nvs_flash wpa_supplicant esp_hw_support spi_flash esp_driver_usb_serial_jtag lwip esp_driver_gpio esp_driver_uart mbedtls zstd
 )

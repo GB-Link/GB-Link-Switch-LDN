@@ -16,6 +16,7 @@
 #include "pico_link.h"
 #include "ldn_keys.h"
 #include "pia_bridge.h"
+#include "trade_shim.h"
 #define printf ldn_wire_printf
 #define MACSTR "%02x:%02x:%02x:%02x:%02x:%02x"
 #define MACARGS(a) (a)[0], (a)[1], (a)[2], (a)[3], (a)[4], (a)[5]
@@ -79,6 +80,7 @@ void ldn_control_init(esp_netif_t *netif, const unsigned char host[6])
        adapter disappear. Harmless when no Pico is attached. */
     ldn_wire_set_rfu_handler(host_to_pico);
     pico_link_start(1);
+    trade_shim_boot((int)esp_reset_reason());
     /* Standalone by default: a host closing the USB port resets this chip, and a
        manually started bridge does not survive that -- the GBA then sees the room
        disappear. LDN_BRIDGE_STOP hands control back for the PC-relay path. */
@@ -107,6 +109,8 @@ static int nibble(char c)
     if (c >= 'A' && c <= 'F') return c - 'A' + 10;
     return -1;
 }
+
+static void emit_line(const char *line) { printf("%s\n", line); }
 
 static void command(const char *line)
 {
@@ -166,6 +170,7 @@ static void command(const char *line)
     if (!strcmp(line, "LDN_KEYS_ERASE")) { ldn_keys_erase(); printf("LDN_KEYS_ERASED\n"); return; }
     if (!strcmp(line, "LDN_BRIDGE_START")) { pia_bridge_start(); printf("LDN_BRIDGE_STARTED\n"); return; }
     if (!strcmp(line, "LDN_BRIDGE_STOP")) { pia_bridge_stop(); printf("LDN_BRIDGE_STOPPED\n"); return; }
+    if (!strcmp(line, "LDN_SHIM_LOG")) { trade_shim_dump(emit_line); return; }
     if (!strcmp(line, "LDN_BRIDGE_STATUS")) {
         static char report[384];
         pia_bridge_status(report, sizeof(report));

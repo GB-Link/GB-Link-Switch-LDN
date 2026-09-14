@@ -53,7 +53,7 @@ typedef struct
     uint8_t connect_id[2];
 
     bool accepted, host_disconnected, connect_wanted;
-    int received, decrypt_failures, sent, reordered;
+    int received, decrypt_failures, sent, reordered, hold_dropped;
     int rx_seen, rx_wrong_source, rx_short, rx_bad_frame, rx_messages, rx_unzip_fail;
     uint8_t rx_first[16];
     int rx_first_len, rx_first_zipped, rx_first_pad, rx_first_footer;

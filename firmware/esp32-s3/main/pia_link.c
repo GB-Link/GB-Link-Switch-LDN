@@ -229,7 +229,9 @@ static void resequence(pia_link_t *l, uint16_t seq, const uint8_t *inner, size_t
     {
         if (bin_less((uint16_t)l->next_deliver, seq) && (uint16_t)(seq - l->next_deliver) < 4096 &&
             len <= PIA_HOLD_BYTES)
-            for (int i = 0; i < PIA_HOLD_SLOTS; ++i)
+        {
+            bool held = false;
+            for (int i = 0; i < PIA_HOLD_SLOTS && !held; ++i)
                 if (!l->hold[i].used)
                 {
                     l->hold[i].used = true;
@@ -237,8 +239,10 @@ static void resequence(pia_link_t *l, uint16_t seq, const uint8_t *inner, size_t
                     l->hold[i].length = (uint16_t)len;
                     memcpy(l->hold[i].data, inner, len);
                     ++l->reordered;
-                    break;
+                    held = true;
                 }
+            if (!held) ++l->hold_dropped;   /* a frame the GBA will never see */
+        }
         return;
     }
     feed_gba(l, inner, len);

@@ -1,6 +1,7 @@
 #include "pia_bridge.h"
 #include "pia_link.h"
 #include "pico_link.h"
+#include "trade_shim.h"
 #include "ldn_control.h"
 #include "ldn_session.h"
 #include "ldn_udp.h"
@@ -30,6 +31,10 @@ static struct
     int64_t next_scan, next_auth, next_tick, next_beacon, deadline;
     int channel_index, auth_attempts;
     bool authenticated, have_room, child_connected;
+    int64_t last_host_frame_ms;
+    uint32_t last_host_time;
+    uint16_t host_skips, host_long_skips;
+    bool host_silent;
     uint16_t leader_devid, child_devid;
     uint8_t beacon[24];
     int frames_to_gba, frames_from_gba;
@@ -136,7 +141,33 @@ static void on_deliver(const uint8_t *frame, size_t length, void *user)
     if (length < 12) return;
     size_t n = frame[8] & 0x7F;
     if (12 + n > length) n = length - 12;
-    send_host_frame(frame + 12, n);
+    if (n > 92) n = 92;
+    static uint8_t payload[92];
+    memcpy(payload, frame + 12, n);
+    int64_t now = now_ms();
+    if (g.last_host_frame_ms && now - g.last_host_frame_ms > 250)
+        trade_shim_note(now, TRADE_SHIM_NOTE_HOST_SILENCE, (uint16_t)(now - g.last_host_frame_ms), 1);
+    g.host_silent = false;
+    /* The Switch's adapter counts its emulated frames; a jump means the emulated
+       game did not run those frames (a stall), and while stalled its link layer
+       is not draining its 20-slot receive queue. */
+    uint32_t stamp = bin_u32(frame + 4);
+    uint32_t jump = stamp - g.last_host_time;
+    if (g.last_host_time && jump >= 2 && jump < 1000)
+    {
+        if (jump == 2) ++g.host_skips;
+        else
+        {
+            ++g.host_long_skips;
+            trade_shim_note(now, TRADE_SHIM_NOTE_SWITCH_CLOCK_SKIP, (uint16_t)jump, (uint16_t)(now - g.last_host_frame_ms));
+        }
+    }
+    g.last_host_time = stamp;
+    g.last_host_frame_ms = now;
+    static uint8_t pre[8 * 73];
+    size_t r = trade_shim_host(payload, n, now, pre, sizeof(pre));
+    for (size_t o = 0; o + 73 <= r; o += 73) send_host_frame(pre + o, 73);
+    send_host_frame(payload, n);
 }
 
 static void on_log(const char *message, void *user) { (void)user; printf("LDN_BRIDGE %s\n", message); }
@@ -158,6 +189,19 @@ static void on_action(const uint8_t source[6], const uint8_t *body, size_t lengt
 
 /* ---- inbound from the adapter ---------------------------------------------- */
 
+static void connect_child(void)
+{
+    g.child_devid = (uint16_t)(esp_random() | 1);
+    g.child_connected = true;
+    /* No shim reset here: the GBA's link manager re-connects after a link-loss
+       recovery while both games keep their round counters and the Switch keeps
+       its sequence expectation. A genuinely new session goes through
+       pia_bridge_start, which does reset. */
+    trade_shim_note(now_ms(), TRADE_SHIM_NOTE_CHILD_CONNECT, g.child_devid, 0);
+    send_command(RFU1_CONNECT_ACK, g.child_devid);
+    printf("LDN_BRIDGE child connected devid=%04x\n", g.child_devid);
+}
+
 static void feed_rfu1(const uint8_t *frame, size_t length)
 {
     if (length < 12 || memcmp(frame, kRfu1, 4) != 0) return;
@@ -168,21 +212,23 @@ static void feed_rfu1(const uint8_t *frame, size_t length)
     if (type == RFU1_CONNECT_REQ)
     {
         pia_link_set_connect(&g.link, true);
-        if (!g.child_connected && g.link.accepted)
-        {
-            g.child_devid = (uint16_t)(esp_random() | 1);
-            g.child_connected = true;
-            send_command(RFU1_CONNECT_ACK, g.child_devid);
-            printf("LDN_BRIDGE child connected devid=%04x\n", g.child_devid);
-        }
+        if (!g.child_connected && g.link.accepted) connect_child();
     }
     else if (type == RFU1_CLIENT_SEND)
     {
         size_t n = header >> 24;
         if (n > 92) n = 92;
-        pia_link_enqueue(&g.link, frame + 12, n);
+        static uint8_t payload[92], reply[146];
+        memcpy(payload, frame + 12, n);
+        size_t r = trade_shim_child(payload, n, now_ms(), reply, sizeof(reply));
+        pia_link_enqueue(&g.link, payload, n);
+        for (size_t o = 0; o + 73 <= r; o += 73) send_host_frame(reply + o, 73);
     }
-    else if (type == RFU1_DISCONNECT) g.child_connected = false;
+    else if (type == RFU1_DISCONNECT)
+    {
+        if (g.child_connected) trade_shim_note(now_ms(), TRADE_SHIM_NOTE_CHILD_DISCONNECT, 0, 0);
+        g.child_connected = false;
+    }
 }
 
 static void drain_adapter(void)
@@ -195,6 +241,9 @@ static void drain_adapter(void)
     {
         if (length < 5 || gb[2] != PICO_LINK_CHANNEL_DATA) continue;
         size_t n = length - 5;
+        /* RFU1 chunks are exactly 64 bytes, zero padded; anything shorter is
+           the adapter's own telemetry. */
+        if (n < 64) { trade_shim_adapter(now_ms(), gb + 5, n); continue; }
         if (used + n > sizeof(stream)) used = 0;
         memcpy(stream + used, gb + 5, n);
         used += n;
@@ -221,6 +270,8 @@ void pia_bridge_start(void)
     g.started = true;
     g.state = BR_SCAN;
     g.leader_devid = (uint16_t)(esp_random() | 1);
+    trade_shim_reset();
+    trade_shim_note(now_ms(), TRADE_SHIM_NOTE_BRIDGE_START, 0, 0);
     ldn_udp_set_handler(on_datagram);
     ldn_control_set_action_handler(on_action);
     /* Only enter the mode if no GBA is already talking to the adapter: re-entering
@@ -232,6 +283,7 @@ void pia_bridge_start(void)
 void pia_bridge_stop(void)
 {
     if (!g.started) return;
+    trade_shim_note(now_ms(), TRADE_SHIM_NOTE_BRIDGE_STOP, (uint16_t)g.state, 0);
     ldn_udp_set_handler(NULL);
     ldn_control_set_action_handler(NULL);
     ldn_session_stop();
@@ -371,15 +423,32 @@ void pia_bridge_poll(void)
             pia_link_tick(&g.link);
             g.next_tick += 17;
             if (g.next_tick < now) g.next_tick = now + 17;
-            if (g.link.accepted && !g.child_connected && g.link.connect_wanted)
-            {
-                g.child_devid = (uint16_t)(esp_random() | 1);
-                g.child_connected = true;
-                send_command(RFU1_CONNECT_ACK, g.child_devid);
-                printf("LDN_BRIDGE child connected devid=%04x\n", g.child_devid);
-            }
+            if (g.link.accepted && !g.child_connected && g.link.connect_wanted) connect_child();
         }
-        if (g.link.host_disconnected) { printf("LDN_BRIDGE host disconnected\n"); pia_bridge_stop(); }
+        if (g.child_connected)
+        {
+            uint8_t extra[16], repeat[73];
+            size_t n = trade_shim_inject(now, extra, sizeof(extra));
+            if (n) pia_link_enqueue(&g.link, extra, n);
+            n = trade_shim_host_inject(now, repeat, sizeof(repeat));
+            if (n) send_host_frame(repeat, n);
+        }
+        trade_shim_bridge_counters(now, (uint16_t)g.link.reordered, (uint16_t)g.link.hold_dropped,
+                                   (uint16_t)g.link.overflow, (uint16_t)g.link.out_count,
+                                   (uint16_t)g.link.rx_bad_frame, (uint16_t)g.link.decrypt_failures, (uint16_t)g.link.rx_unzip_fail,
+                                   g.host_skips, g.host_long_skips);
+        if (g.last_host_frame_ms && !g.host_silent && now - g.last_host_frame_ms > 250)
+        {
+            g.host_silent = true;
+            trade_shim_note(now, TRADE_SHIM_NOTE_HOST_SILENCE, 250, 0);
+            printf("LDN_BRIDGE Switch stream has gone quiet\n");
+        }
+        if (g.link.host_disconnected)
+        {
+            printf("LDN_BRIDGE host disconnected\n");
+            trade_shim_note(now, TRADE_SHIM_NOTE_HOST_DISCONNECT, 0, 0);
+            pia_bridge_stop();
+        }
         return;
 
     default:
@@ -393,14 +462,20 @@ void pia_bridge_status(char *out, size_t cap)
     if (!g.started) { snprintf(out, cap, "state=stopped"); return; }
     snprintf(out, cap,
              "state=%s child=%d accepted=%d pia_rx=%d pia_tx=%d decrypt_failed=%d reordered=%d "
-             "to_gba=%d from_gba=%d queued=%d repeated=%d overflow=%d "
+             "to_gba=%d from_gba=%d queued=%d repeated=%d overflow=%d hold_dropped=%d "
              "rx_seen=%d wrong_src=%d short=%d bad_frame=%d msgs=%d unzip_fail=%d conn_state=%d host_id=%04x",
              names[g.state], g.child_connected, g.link.accepted, g.link.received, g.link.sent,
              g.link.decrypt_failures, g.link.reordered, g.frames_to_gba, g.frames_from_gba,
-             g.link.out_count, g.link.repeated, g.link.overflow,
+             g.link.out_count, g.link.repeated, g.link.overflow, g.link.hold_dropped,
              g.link.rx_seen, g.link.rx_wrong_source, g.link.rx_short, g.link.rx_bad_frame,
              g.link.rx_messages, g.link.rx_unzip_fail, g.link.conn.state, g.link.conn.host_id);
     size_t at = strlen(out);
+    if (at + 80 < cap)
+    {
+        out[at++] = ' ';
+        trade_shim_status(out + at, cap - at);
+        at += strlen(out + at);
+    }
     if (g.link.rx_first_len > 0 && at + 64 < cap)
     {
         at += (size_t)snprintf(out + at, cap - at, " first(zip=%d pad=%d foot=%d)=",
