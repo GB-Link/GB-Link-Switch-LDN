@@ -33,6 +33,9 @@ static struct
     uint16_t stall_low;
     int64_t stall_since;
     bool stall_reported;
+    uint8_t net_type;
+    uint32_t net_seq;
+    bool net_unacked_noted;
     int channel_index, auth_attempts;
     bool authenticated, have_room, child_connected;
     int64_t last_host_frame_ms;
@@ -475,6 +478,25 @@ void pia_bridge_poll(void)
         }
         trade_shim_poll(now);
         check_stall(now);
+        {
+            /* Each new net protocol request from the Switch, and whether it keeps coming back:
+               repeats past a second mean the Switch is not taking our acknowledgement. */
+            const pia_conn_t *c = &g.link.conn;
+            if (c->net_requests && (c->net_last_type != g.net_type || c->net_last_seq != g.net_seq))
+            {
+                g.net_type = c->net_last_type;
+                g.net_seq = c->net_last_seq;
+                g.net_unacked_noted = false;
+                trade_shim_note(now, TRADE_SHIM_NOTE_NET_REQUEST, g.net_type, (uint16_t)g.net_seq);
+                printf("LDN_BRIDGE Switch net request %02x seq %u\n", (unsigned)g.net_type, (unsigned)g.net_seq);
+            }
+            if (!g.net_unacked_noted && c->net_repeats >= 4)
+            {
+                g.net_unacked_noted = true;
+                trade_shim_note(now, TRADE_SHIM_NOTE_NET_UNACKNOWLEDGED, g.net_type, (uint16_t)c->net_repeats);
+                printf("LDN_BRIDGE Switch keeps repeating net request %02x: acknowledgement not taken\n", (unsigned)g.net_type);
+            }
+        }
         if (g.child_connected)
         {
             uint8_t extra[16], repeat[73];

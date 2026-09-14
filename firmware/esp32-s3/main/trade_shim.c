@@ -822,7 +822,7 @@ static const char *const kEventNames[] = {
     "?", "BOOT", "RESET", "CONFIRM", "PARENT_STANDBY", "CHILD_STANDBY", "REQUEST", "INJECT",
     "ACK", "REANSWER", "REREQUEST", "NOTE", "HOST_BLOCK", "GIVE_UP", "ADAPTER", "BRIDGE", "TRACE",
     "SENT", "ECHO", "PIA" };
-static const char *const kNoteNames[] = { "?", "bridge start", "child connect", "child disconnect", "host disconnect", "bridge stop", "host silence ms", "parent disconnect cmd", "child tag gap prev/now", "switch clock skip frames/ms", "echo synthesized idx/count", "parent fragment gap expect/got", "echo gap mask/count", "restamped resend idx/tag", "adapter trace seq count<<8|restarts", "unzip failure error/wire bytes", "echo stall unechoed/ms", "pia stall pending/ms", "stall recovered pia=1/echo=2" };
+static const char *const kNoteNames[] = { "?", "bridge start", "child connect", "child disconnect", "host disconnect", "bridge stop", "host silence ms", "parent disconnect cmd", "child tag gap prev/now", "switch clock skip frames/ms", "echo synthesized idx/count", "parent fragment gap expect/got", "echo gap mask/count", "restamped resend idx/tag", "adapter trace seq count<<8|restarts", "unzip failure error/wire bytes", "echo stall unechoed/ms", "pia stall pending/ms", "stall recovered pia=1/echo=2", "switch net request type/seq", "switch net request NOT acknowledged type/copies" };
 static const char *const kTraceKinds[] = { "?", "cmd", "event", "restart_in_state", "delivery", "sd_reset_in_state", "login" };
 
 static void format_entry(const log_entry_t *e, char *line, size_t cap)

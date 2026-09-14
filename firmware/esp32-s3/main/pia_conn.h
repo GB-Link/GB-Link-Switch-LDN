@@ -35,6 +35,12 @@ typedef struct
     int rtt_count;
     pia_outbox_t outbox[PIA_OUTBOX_SLOTS];
     int outbox_count;
+    /* Net protocol requests the host repeats until acknowledged, and how many copies of
+       the newest one arrived: a copy after our acknowledgement means it was not taken. */
+    uint32_t net_requests;
+    uint8_t net_last_type;
+    uint32_t net_last_seq;
+    int net_repeats;
 } pia_conn_t;
 
 void pia_conn_init(pia_conn_t *c, const uint8_t our_mac[6], const uint8_t host_mac[6], const char *our_ip);
