@@ -55,6 +55,8 @@ typedef struct
     bool accepted, host_disconnected, connect_wanted;
     int received, decrypt_failures, sent, reordered, hold_dropped;
     int rx_seen, rx_wrong_source, rx_short, rx_bad_frame, rx_messages, rx_unzip_fail;
+    int rx_body_max, rx_msgs_max;                  /* largest decompressed body / message count in one datagram */
+    int rx_unzip_last_error, rx_unzip_last_len;   /* why the newest undecodable datagram failed, its wire size */
     uint8_t rx_first[16];
     int rx_first_len, rx_first_zipped, rx_first_pad, rx_first_footer;
 
@@ -67,6 +69,18 @@ typedef struct
     uint8_t idle[PIA_OUT_BYTES];
     uint16_t idle_len;
     bool has_idle;
+    int idle_evicted;                 /* idle child frames dropped to keep command frames queued */
+
+    /* Called on each queued child frame just before it is wrapped and sent, so a
+       per-frame sequence is stamped only on frames that actually leave. */
+    void (*stamp)(uint8_t *payload, size_t length);
+
+    /* The Switch's view of the reliable stream, for stall forensics: the base of its
+       send window (its oldest frame not yet acknowledged by us) and the next frame of
+       ours it has acknowledged, each with when it last moved. */
+    uint16_t peer_low, peer_ack_next;
+    int64_t peer_low_moved_ms, peer_ack_moved_ms, peer_ack_seen_ms;
+    bool peer_low_valid, peer_ack_valid;
 } pia_link_t;
 
 void pia_link_init(pia_link_t *l, const uint8_t ssid[16], const uint8_t our_mac[6],

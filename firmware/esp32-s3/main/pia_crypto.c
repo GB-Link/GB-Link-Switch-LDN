@@ -4,6 +4,7 @@
 #include "psa/crypto.h"
 #define ZSTD_STATIC_LINKING_ONLY
 #include "zstd.h"
+#include "zstd_errors.h"
 
 static const uint8_t kSessionKey[16] = {
     0x83, 0xca, 0x7f, 0xab, 0x73, 0x4c, 0x34, 0x63, 0x3b, 0x10, 0x18, 0x35, 0x26, 0xc1, 0xe8, 0x5b};
@@ -206,9 +207,9 @@ int pia_decompress(const uint8_t *in, size_t len, uint8_t *out, size_t out_cap)
     if (!s_dctx && !(s_dctx = ZSTD_createDCtx())) return -1;
     /* Pia may append footer bytes after the frame, so decode the frame alone. */
     size_t frame = ZSTD_findFrameCompressedSize(in, len);
-    if (ZSTD_isError(frame)) return -1;
+    if (ZSTD_isError(frame)) return -(1000 + (int)ZSTD_getErrorCode(frame));
     size_t written = ZSTD_decompressDCtx(s_dctx, out, out_cap, in, frame);
-    if (ZSTD_isError(written)) return -1;
+    if (ZSTD_isError(written)) return -(1000 + (int)ZSTD_getErrorCode(written));
     return (int)written;
 }
 
@@ -239,28 +240,43 @@ int pia_message_encode(const pia_message_t *m, uint8_t *out, size_t out_cap)
     return (int)(o + m->length);
 }
 
+void pia_message_iter_init(pia_message_iter_t *it, const uint8_t *data, size_t len)
+{
+    it->data = data;
+    it->len = len;
+    it->pos = 0;
+    it->size = -1;
+    it->proto = -1;
+    it->flags = 0;
+}
+
+/* A message header only carries the fields that differ from the previous message. */
+bool pia_message_next(pia_message_iter_t *it, pia_message_t *out)
+{
+    const uint8_t *data = it->data;
+    size_t len = it->len, i = it->pos;
+    if (i >= len) return false;
+    uint8_t bits = data[i++];
+    if ((bits & 0xf0) != 0 || (bits == 0 && it->size < 0)) return false;
+    if (bits & 1) { if (i >= len) return false; it->flags = data[i++]; }
+    if (bits & 2) { if (i + 2 > len) return false; it->size = bin_b16(data + i); i += 2; }
+    if (bits & 4) { if (i >= len) return false; it->proto = data[i++]; }
+    if (bits & 8) { if (i >= len) return false; ++i; }
+    if (it->size < 0 || it->proto < 0 || i + (size_t)it->size > len) return false;
+    out->protocol = (uint8_t)it->proto;
+    out->flags = it->flags;
+    out->has_flags = true;
+    out->payload = data + i;
+    out->length = (uint16_t)it->size;
+    it->pos = i + (size_t)it->size;
+    return true;
+}
+
 int pia_messages_decode(const uint8_t *data, size_t len, pia_message_t *out, int max)
 {
+    pia_message_iter_t it;
+    pia_message_iter_init(&it, data, len);
     int count = 0;
-    size_t i = 0;
-    int size = -1, proto = -1;
-    uint8_t flags = 0;
-    while (i < len && count < max)
-    {
-        uint8_t bits = data[i++];
-        if ((bits & 0xf0) != 0 || (bits == 0 && size < 0)) break;
-        if (bits & 1) { if (i >= len) break; flags = data[i++]; }
-        if (bits & 2) { if (i + 2 > len) break; size = bin_b16(data + i); i += 2; }
-        if (bits & 4) { if (i >= len) break; proto = data[i++]; }
-        if (bits & 8) { if (i >= len) break; ++i; }
-        if (size < 0 || proto < 0 || i + (size_t)size > len) break;
-        out[count].protocol = (uint8_t)proto;
-        out[count].flags = flags;
-        out[count].has_flags = true;
-        out[count].payload = data + i;
-        out[count].length = (uint16_t)size;
-        ++count;
-        i += (size_t)size;
-    }
+    while (count < max && pia_message_next(&it, &out[count])) ++count;
     return count;
 }

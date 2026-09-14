@@ -28,12 +28,18 @@ static struct
     pia_link_t link;
     uint8_t our_mac[6];
     char our_ip[16], host_ip[16];
-    int64_t next_scan, next_auth, next_tick, next_beacon, deadline;
+    int64_t next_scan, next_auth, next_beacon, deadline;
+    int64_t next_tick_us, tick_fraction;   /* the Pia tick at the GBA's 59.727 Hz, in microseconds plus parts per 59727 */
+    uint16_t stall_low;
+    int64_t stall_since;
+    bool stall_reported;
     int channel_index, auth_attempts;
     bool authenticated, have_room, child_connected;
     int64_t last_host_frame_ms;
     uint32_t last_host_time;
     uint16_t host_skips, host_long_skips;
+    int unzip_seen;
+    int64_t last_unzip_ms;
     bool host_silent;
     uint16_t leader_devid, child_devid;
     uint8_t beacon[24];
@@ -220,8 +226,9 @@ static void feed_rfu1(const uint8_t *frame, size_t length)
         if (n > 92) n = 92;
         static uint8_t payload[92], reply[146];
         memcpy(payload, frame + 12, n);
-        size_t r = trade_shim_child(payload, n, now_ms(), reply, sizeof(reply));
-        pia_link_enqueue(&g.link, payload, n);
+        bool forward = true;
+        size_t r = trade_shim_child(payload, n, now_ms(), reply, sizeof(reply), &forward);
+        if (forward) pia_link_enqueue(&g.link, payload, n);
         for (size_t o = 0; o + 73 <= r; o += 73) send_host_frame(reply + o, 73);
     }
     else if (type == RFU1_DISCONNECT)
@@ -293,6 +300,37 @@ void pia_bridge_stop(void)
 }
 
 bool pia_bridge_running(void) { return g.started; }
+bool pia_bridge_in_session(void) { return g.started && g.state == BR_RUN; }
+
+/* The reliable stream to the Switch has not moved for a while although frames are
+   waiting: record both sides' view of it, once per stall. */
+static void check_stall(int64_t now)
+{
+    const pia_link_t *l = &g.link;
+    int pending = pia_reliable_pending(&l->reliable);
+    if (pending == 0 || l->reliable.low != g.stall_low)
+    {
+        if (g.stall_reported) trade_shim_pia_recovered(now);
+        g.stall_low = l->reliable.low;
+        g.stall_since = now;
+        g.stall_reported = false;
+        return;
+    }
+    if (g.stall_reported || now - g.stall_since < 1500) return;
+    g.stall_reported = true;
+    trade_shim_pia_t p = {
+        .our_low = l->reliable.low, .our_next = l->reliable.next, .our_pending = (uint16_t)pending,
+        .peer_low = l->peer_low, .peer_ack_next = l->peer_ack_next, .receive_next = l->reliable.receive_next,
+        .stalled_ms = now - g.stall_since,
+        .peer_low_age_ms = l->peer_low_valid ? now - l->peer_low_moved_ms : -1,
+        .peer_ack_age_ms = l->peer_ack_valid ? now - l->peer_ack_moved_ms : -1,
+        .peer_ack_seen_age_ms = l->peer_ack_valid ? now - l->peer_ack_seen_ms : -1,
+        .out_of_order = (uint16_t)l->reliable.ooo_count, .credits = (uint16_t)l->credits,
+        .k_queued = (uint16_t)l->k_count, .k_inflight = (uint16_t)l->k_inflight_count,
+        .out_queued = (uint16_t)l->out_count, .overflow = l->overflow, .idle_evicted = l->idle_evicted,
+    };
+    trade_shim_pia_stall(now, &p);
+}
 
 void pia_bridge_room(const ldn_network_t *net)
 {
@@ -408,7 +446,11 @@ void pia_bridge_poll(void)
                       on_send, on_deliver, on_log, NULL);
         pia_link_set_connect(&g.link, false);
         g.state = BR_RUN;
-        g.next_tick = now;
+        g.next_tick_us = esp_timer_get_time();
+        g.tick_fraction = 0;
+        g.link.stamp = trade_shim_stamp;
+        g.stall_since = now;
+        g.stall_reported = false;
         g.next_beacon = now;
         printf("LDN_BRIDGE joined room host=%s ours=%s host_ip=%s\n", host_name, g.our_ip, g.host_ip);
         return;
@@ -418,13 +460,21 @@ void pia_bridge_poll(void)
         ldn_udp_heartbeat();
         drain_adapter();
         if (now >= g.next_beacon) { send_beacon(); g.next_beacon = now + 500; }
-        if (now >= g.next_tick)
+        int64_t now_us = esp_timer_get_time();
+        if (now_us >= g.next_tick_us)
         {
             pia_link_tick(&g.link);
-            g.next_tick += 17;
-            if (g.next_tick < now) g.next_tick = now + 17;
+            /* 59.727 Hz, the GBA frame rate the Switch runs at: at most one child frame
+               goes out per tick, so a slower tick falls behind a child that sends every
+               frame and the queue creeps. */
+            g.tick_fraction += 1000000000LL;
+            g.next_tick_us += g.tick_fraction / 59727;
+            g.tick_fraction %= 59727;
+            if (g.next_tick_us < now_us) g.next_tick_us = now_us + 16742;
             if (g.link.accepted && !g.child_connected && g.link.connect_wanted) connect_child();
         }
+        trade_shim_poll(now);
+        check_stall(now);
         if (g.child_connected)
         {
             uint8_t extra[16], repeat[73];
@@ -433,10 +483,25 @@ void pia_bridge_poll(void)
             n = trade_shim_host_inject(now, repeat, sizeof(repeat));
             if (n) send_host_frame(repeat, n);
         }
+        if (g.link.rx_unzip_fail != g.unzip_seen)
+        {
+            /* The first failure after a quiet spell marks where a burst began. */
+            if (now - g.last_unzip_ms > 10000)
+            {
+                trade_shim_note(now, TRADE_SHIM_NOTE_UNZIP_FAILURE, (uint16_t)g.link.rx_unzip_last_error,
+                                (uint16_t)g.link.rx_unzip_last_len);
+                printf("LDN_BRIDGE Switch datagram could not be decompressed (error %d)\n", g.link.rx_unzip_last_error);
+            }
+            g.last_unzip_ms = now;
+            g.unzip_seen = g.link.rx_unzip_fail;
+        }
+        const int body_max = g.link.rx_body_max;
         trade_shim_bridge_counters(now, (uint16_t)g.link.reordered, (uint16_t)g.link.hold_dropped,
                                    (uint16_t)g.link.overflow, (uint16_t)g.link.out_count,
                                    (uint16_t)g.link.rx_bad_frame, (uint16_t)g.link.decrypt_failures, (uint16_t)g.link.rx_unzip_fail,
-                                   g.host_skips, g.host_long_skips);
+                                   g.host_skips, g.host_long_skips,
+                                   (uint16_t)(body_max > 65535 ? 65535 : body_max),
+                                   (uint16_t)g.link.rx_unzip_last_error);
         if (g.last_host_frame_ms && !g.host_silent && now - g.last_host_frame_ms > 250)
         {
             g.host_silent = true;

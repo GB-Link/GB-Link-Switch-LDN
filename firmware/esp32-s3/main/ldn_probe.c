@@ -91,17 +91,21 @@ static void export_advertisement(void)
         hex[2 * i + 1] = digits[body[i] & 15];
     }
     hex[2 * length] = '\0';
-    printf("LDN_ADV " MACSTR " %u %s\n", MAC2STR(source), channel, hex);
+    /* While relaying, the room's beacons only matter to the bridge; printing each one
+       costs the relay loop time for output nobody is reading. */
+    const bool quiet = pia_bridge_in_session();
+    if (!quiet) printf("LDN_ADV " MACSTR " %u %s\n", MAC2STR(source), channel, hex);
     /* Decode locally too: once the session layer moves here the host is only a console. */
     static ldn_network_t room;
     if (ldn_decode_advertisement(body, length, source, channel, &room)) {
         const char *host_name = "";
         for (int i = 0; i < room.member_count; ++i)
             if (room.members[i].index == 0) host_name = room.members[i].name;
-        printf("LDN_ROOM " MACSTR " ch=%d proto=%d comm=%016llx members=%d/%d host=%s app=%d\n",
-               MAC2STR(source), room.channel, room.protocol,
-               (unsigned long long)room.communication_id, room.member_count, room.maximum,
-               host_name, room.app_data_len);
+        if (!quiet)
+            printf("LDN_ROOM " MACSTR " ch=%d proto=%d comm=%016llx members=%d/%d host=%s app=%d\n",
+                   MAC2STR(source), room.channel, room.protocol,
+                   (unsigned long long)room.communication_id, room.member_count, room.maximum,
+                   host_name, room.app_data_len);
         pia_bridge_room(&room);
     }
     fflush(stdout);

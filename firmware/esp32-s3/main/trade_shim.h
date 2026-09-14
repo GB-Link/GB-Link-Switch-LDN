@@ -47,7 +47,27 @@ void trade_shim_reset(void);
    in place. When the child is retrying a barrier the parent already answered, one
    or two parent UNI frames (73 bytes each) for the child are written to `reply`
    and their total length returned. */
-size_t trade_shim_child(uint8_t *payload, size_t length, int64_t now_ms, uint8_t *reply, size_t reply_capacity);
+size_t trade_shim_child(uint8_t *payload, size_t length, int64_t now_ms, uint8_t *reply, size_t reply_capacity, bool *forward);
+
+/* A child frame about to be sent to the parent (called for exactly the frames that are
+   sent, in order): stamps the next consecutive sequence tag on a command frame. */
+void trade_shim_stamp(uint8_t *payload, size_t length);
+
+/* Periodic checks (the parent no longer echoing the child's commands). */
+void trade_shim_poll(int64_t now_ms);
+
+/* The reliable stream to the Switch has stopped advancing: the state for the log. */
+typedef struct
+{
+    uint16_t our_low, our_next, our_pending;
+    uint16_t peer_low, peer_ack_next, receive_next;
+    int64_t stalled_ms, peer_low_age_ms, peer_ack_age_ms, peer_ack_seen_age_ms;
+    uint16_t out_of_order, credits, k_queued, k_inflight, out_queued;
+    int overflow, idle_evicted;
+} trade_shim_pia_t;
+void trade_shim_pia_stall(int64_t now_ms, const trade_shim_pia_t *p);
+/* The stream moved again after a reported stall. */
+void trade_shim_pia_recovered(int64_t now_ms);
 
 /* Parent -> child UNI frame (3-byte LLSF header + five 14-byte slots). Rewritten in
    place. When the parent's echo of the child's last block fragment arrives while
@@ -69,7 +89,8 @@ enum { TRADE_SHIM_NOTE_BRIDGE_START = 1, TRADE_SHIM_NOTE_CHILD_CONNECT, TRADE_SH
        TRADE_SHIM_NOTE_HOST_DISCONNECT, TRADE_SHIM_NOTE_BRIDGE_STOP, TRADE_SHIM_NOTE_HOST_SILENCE,
        TRADE_SHIM_NOTE_PARENT_DISCONNECT_CMD, TRADE_SHIM_NOTE_CHILD_TAG_GAP, TRADE_SHIM_NOTE_SWITCH_CLOCK_SKIP,
        TRADE_SHIM_NOTE_ECHO_SYNTHESIZED, TRADE_SHIM_NOTE_PARENT_FRAGMENT_GAP, TRADE_SHIM_NOTE_ECHO_GAP,
-       TRADE_SHIM_NOTE_RESTAMPED_RESEND, TRADE_SHIM_NOTE_ADAPTER_TRACE };
+       TRADE_SHIM_NOTE_RESTAMPED_RESEND, TRADE_SHIM_NOTE_ADAPTER_TRACE, TRADE_SHIM_NOTE_UNZIP_FAILURE,
+       TRADE_SHIM_NOTE_ECHO_STALL, TRADE_SHIM_NOTE_PIA_STALL, TRADE_SHIM_NOTE_STALL_RECOVERED };
 void trade_shim_note(int64_t now_ms, uint8_t kind, uint16_t b, uint16_t c);
 
 /* Adapter telemetry frame from the Pico (a data-channel payload shorter than 64
@@ -80,7 +101,12 @@ void trade_shim_adapter(int64_t now_ms, const uint8_t *frame, size_t length);
    periodically. */
 void trade_shim_bridge_counters(int64_t now_ms, uint16_t reordered, uint16_t hold_dropped, uint16_t overflow, uint16_t queued,
                                 uint16_t bad_frames, uint16_t decrypt_failures, uint16_t unzip_failures,
-                                uint16_t host_skips, uint16_t host_long_skips);
+                                uint16_t host_skips, uint16_t host_long_skips,
+                                uint16_t rx_body_max, uint16_t unzip_last_error);
 
 void trade_shim_status(char *out, size_t capacity);
-void trade_shim_dump(void (*emit)(const char *line));
+/* The log, a few lines per call so a long dump never holds up the bridge: begin, then
+   step until it returns false. An incident record, if any, comes first and is cleared
+   once the whole log has been emitted. */
+void trade_shim_dump_begin(void);
+bool trade_shim_dump_step(void (*emit)(const char *line), int max_lines);
