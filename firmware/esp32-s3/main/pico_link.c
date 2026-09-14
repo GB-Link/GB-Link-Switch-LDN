@@ -187,7 +187,7 @@ void pico_link_start(int core_id)
                                  s_swapped ? PICO_LINK_PIN_TX : PICO_LINK_PIN_RX,
                                  UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
 
-    if (!s_inbound) s_inbound = xQueueCreate(24, sizeof(pico_frame_t));
+    if (!s_inbound) s_inbound = xQueueCreate(48, sizeof(pico_frame_t));
     ESP_ERROR_CHECK(s_inbound ? ESP_OK : ESP_ERR_NO_MEM);
 
     s_state = RX_SYNC0;

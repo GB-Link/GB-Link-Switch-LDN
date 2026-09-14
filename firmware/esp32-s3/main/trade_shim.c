@@ -45,10 +45,15 @@ static const uint8_t kRequestFragments[] = {17, 17, 9, 19, 4};
 /* ---- reset-surviving event log ---------------------------------------------- */
 
 enum { EV_BOOT = 1, EV_RESET, EV_CONFIRM, EV_PARENT_STANDBY, EV_CHILD_STANDBY, EV_REQUEST, EV_INJECT,
-       EV_ACK, EV_REANSWER, EV_REREQUEST, EV_NOTE, EV_HOST_BLOCK, EV_GIVE_UP, EV_ADAPTER, EV_BRIDGE, EV_TRACE };
+       EV_ACK, EV_REANSWER, EV_REREQUEST, EV_NOTE, EV_HOST_BLOCK, EV_GIVE_UP, EV_ADAPTER, EV_BRIDGE, EV_TRACE,
+       EV_SENT, EV_ECHO, EV_PIA };
 
-#define LOG_MAGIC 0x53484d32u   /* "SHM2" */
-#define LOG_SLOTS 256
+#define LOG_MAGIC 0x53484d34u   /* "SHM4" */
+#define LOG_SLOTS 400
+/* The history before the first stall since the log was last read, kept apart from the
+   ring so a failure that runs on for minutes cannot overwrite its own beginning. */
+#define INCIDENT_SLOTS 200
+#define INCIDENT_HISTORY 150
 
 typedef struct { uint32_t ms; uint8_t type, a; uint16_t b, c; } log_entry_t;
 
@@ -58,20 +63,58 @@ static RTC_NOINIT_ATTR struct
     uint16_t head, count;
     uint16_t boots;
     log_entry_t entries[LOG_SLOTS];
+    uint16_t incident_count, incident_boot;
+    log_entry_t incident[INCIDENT_SLOTS];
 } rtc_log;
 
-static void log_event(int64_t now_ms, uint8_t type, uint8_t a, uint16_t b, uint16_t c)
+static bool incident_open;   /* entries logged now are also added to the incident */
+static int incident_reason;  /* the stall whose recovery releases the record: 0 none, 1 pia, 2 echo */
+
+static void log_event_at(uint32_t ms, uint8_t type, uint8_t a, uint16_t b, uint16_t c)
 {
     if (rtc_log.magic != LOG_MAGIC) return;
     log_entry_t *e = &rtc_log.entries[(rtc_log.head + rtc_log.count) % LOG_SLOTS];
     if (rtc_log.count == LOG_SLOTS) rtc_log.head = (uint16_t)((rtc_log.head + 1) % LOG_SLOTS);
     else ++rtc_log.count;
-    e->ms = (uint32_t)now_ms; e->type = type; e->a = a; e->b = b; e->c = c;
+    e->ms = ms; e->type = type; e->a = a; e->b = b; e->c = c;
+    if (incident_open && rtc_log.incident_count < INCIDENT_SLOTS) rtc_log.incident[rtc_log.incident_count++] = *e;
+}
+
+static void log_event(int64_t now_ms, uint8_t type, uint8_t a, uint16_t b, uint16_t c)
+{
+    log_event_at((uint32_t)now_ms, type, a, b, c);
+}
+
+/* Starts the incident record unless one is still waiting to be read: the recent history
+   is copied in, and everything logged until incident_end joins it. */
+static bool incident_begin(void)
+{
+    if (rtc_log.magic != LOG_MAGIC || rtc_log.incident_count) return false;
+    int n = rtc_log.count < INCIDENT_HISTORY ? rtc_log.count : INCIDENT_HISTORY;
+    for (int i = 0; i < n; ++i)
+        rtc_log.incident[i] = rtc_log.entries[(rtc_log.head + rtc_log.count - n + i) % LOG_SLOTS];
+    rtc_log.incident_count = (uint16_t)n;
+    rtc_log.incident_boot = rtc_log.boots;
+    incident_open = true;
+    return true;
+}
+
+static void incident_end(void) { incident_open = false; }
+
+/* A stall that cleared on its own was not the failure: free the record for the next one
+   (its entries stay in the ring). */
+static void incident_resolved(int64_t now_ms, int reason)
+{
+    if (incident_reason != reason) return;
+    incident_reason = 0;
+    rtc_log.incident_count = 0;
+    log_event(now_ms, EV_NOTE, TRADE_SHIM_NOTE_STALL_RECOVERED, (uint16_t)reason, 0);
 }
 
 void trade_shim_boot(int reset_reason)
 {
-    if (rtc_log.magic != LOG_MAGIC || rtc_log.head >= LOG_SLOTS || rtc_log.count > LOG_SLOTS)
+    if (rtc_log.magic != LOG_MAGIC || rtc_log.head >= LOG_SLOTS || rtc_log.count > LOG_SLOTS ||
+        rtc_log.incident_count > INCIDENT_SLOTS)
     {
         memset(&rtc_log, 0, sizeof(rtc_log));
         rtc_log.magic = LOG_MAGIC;
@@ -87,15 +130,14 @@ static struct
     uint16_t fakes[TRADE_SHIM_MAX_FAKES];   /* injected rounds, parent numbering, ascending */
     int fake_count;
     int base;                 /* fakes older than the list, folded into a plain offset */
-    uint8_t last_tag;         /* newest tag forwarded to the parent */
-    bool have_tag;
+    uint8_t send_tag;         /* the sequence tag the next frame sent to the parent gets */
+    bool have_tag;            /* the child has sent a command: its stream is established */
     bool post_trade;          /* between the parent's trade confirmation and its next block request */
     bool injected;            /* this trade's extra round has been supplied */
     int last_round;           /* parent numbering of the parent's newest standby answer, -1 none */
     int last_child_round;     /* parent numbering of the newest forwarded child standby command */
     int answers_since_confirm;
     int fake_round;           /* this trade's extra round, parent numbering, -1 none */
-    uint8_t fake_tag;
     bool fake_acked;
     int attempts;
     int64_t injected_at;
@@ -118,12 +160,17 @@ static struct
     /* The parent's block in flight, for gap forensics only. */
     struct { bool active; uint8_t count, expect; } pb;
     int echoes_synthesized, resends_restamped;
-    /* The child's newest command frame exactly as the GBA sent it, and the tag it
-       was forwarded with. */
+    /* The child's newest command frame exactly as the GBA sent it. */
     uint8_t last_frame[16];
     bool have_last_frame;
-    uint8_t last_frame_tag;
     int64_t last_command_ms;
+    /* The newest command frames sent to the parent and the echoes that came back. */
+    struct { uint32_t ms; uint16_t command; uint8_t tag; } sent_ring[16];
+    struct { uint32_t ms; uint16_t command; } echo_ring[16];
+    int sent_head, echo_head, sent_count, echo_count;
+    int64_t clock_ms, last_echo_ms;
+    int sent_since_echo;
+    bool echo_stall_reported;
     uint32_t request_frags;   /* fragment indices the child has sent since the request */
     int duplicates;
 } s;
@@ -140,11 +187,28 @@ void trade_shim_reset(void)
     log_event(0, EV_RESET, 0, 0, 0);
 }
 
-void trade_shim_note(int64_t now_ms, uint8_t kind, uint16_t b, uint16_t c) { log_event(now_ms, EV_NOTE, kind, b, c); }
+static int64_t note_last_ms[64];
+
+void trade_shim_note(int64_t now_ms, uint8_t kind, uint16_t b, uint16_t c)
+{
+    /* These recur for as long as the Switch's stream is disturbed; one of each form every
+       ten seconds shows that without filling the log. */
+    if (kind == TRADE_SHIM_NOTE_HOST_SILENCE || kind == TRADE_SHIM_NOTE_SWITCH_CLOCK_SKIP)
+    {
+        int key = (kind * 2 + (c != 0 && kind == TRADE_SHIM_NOTE_HOST_SILENCE)) % 64;
+        if (note_last_ms[key] && now_ms - note_last_ms[key] < 10000) return;
+        note_last_ms[key] = now_ms;
+    }
+    log_event(now_ms, EV_NOTE, kind, b, c);
+}
 
 /* ---- loss counters ------------------------------------------------------------ */
 
-#define TELEMETRY_PERIOD_MS 30000
+/* A full snapshot this often; in between, a line is written only when a counter it
+   watches moved, at most every CHANGE_LOG_MS while they keep moving, so a failure that
+   runs for minutes cannot push its own beginning out of the ring. */
+#define TELEMETRY_PERIOD_MS 60000
+#define CHANGE_LOG_MS 10000
 
 static struct
 {
@@ -162,53 +226,83 @@ static struct
     /* bridge */
     uint16_t reordered, hold_dropped, overflow, queued_high, bad_frames, decrypt_failures, unzip_failures;
     uint16_t host_skips, host_long_skips;   /* host frames whose adapter clock jumped by 2 / by 3 or more */
+    uint16_t rx_body_max, unzip_last_error;
     int64_t last_logged, last_change_logged;
-    uint32_t last_hash;
 } t;
 
-static uint32_t loss_hash(void)
+typedef struct { uint8_t type, a; uint16_t b, c; uint8_t watch; } counter_line_t;   /* watch: 1 = b, 2 = c */
+#define COUNTER_LINES 18
+
+static uint8_t sat8(uint16_t v) { return v > 255 ? 255 : (uint8_t)v; }
+
+static int counter_lines(counter_line_t *l)
 {
-    return (uint32_t)t.park_drops * 0x9e3779b1u ^ (uint32_t)t.uart_overflows * 0x85ebca6bu ^ (uint32_t)t.fifo_drops * 0xc2b2ae35u
-         ^ (uint32_t)t.aborts * 0x27d4eb2fu ^ (uint32_t)t.retries * 0x165667b1u ^ (uint32_t)t.sd_resets * 0xd3a2646cu
-         ^ (uint32_t)t.err_responses * 0xfd7046c5u ^ (uint32_t)t.login_restarts * 0xb55a4f09u
-         ^ (uint32_t)t.hold_dropped * 0x1b873593u ^ (uint32_t)t.overflow * 0xcc9e2d51u
-         ^ (uint32_t)t.ev_disc * 0x2545f491u ^ (uint32_t)t.ev_timeo * 0x9e3779b9u ^ (uint32_t)t.link_pwr_zero * 0x7feb352du
-         ^ (uint32_t)(t.wipe15 | (t.wipe16 << 8) | ((t.wipe17 & 0xf0) << 16)) * 0x846ca68bu
-         ^ (uint32_t)t.out_ring_drops * 0x4cf5ad43u
-         ^ (uint32_t)t.gba_restarts * 0x9e3779b7u
-         ^ (uint32_t)(t.bad_frames | (t.decrypt_failures << 8) | (t.unzip_failures << 16)) * 0x3c6ef372u;
+    int n = 0;
+#define LINE(type_, a_, b_, c_, watch_) \
+    (l[n] = (counter_line_t){ (uint8_t)(type_), (uint8_t)(a_), (uint16_t)(b_), (uint16_t)(c_), (uint8_t)(watch_) }, ++n)
+    LINE(EV_ADAPTER, 0x10, t.park_drops, t.uart_overflows, 3);
+    LINE(EV_ADAPTER, 0x20, t.fifo_drops, t.fifo_high | (t.park_high << 8), 1);
+    LINE(EV_ADAPTER, 0x30, t.aborts, t.retries, 3);
+    LINE(EV_ADAPTER, 0x40, t.sd_resets | (t.deliv_fail << 8), sat8(t.err_responses) | (sat8(t.login_restarts) << 8), 3);
+    LINE(EV_ADAPTER, 0x50, t.park_idle_drops, t.comstate, 0);
+    LINE(EV_ADAPTER, 0x60, t.ev_timeo | (t.ev_disc << 8), t.ev_data | (t.ev_rtx << 8), 1);
+    LINE(EV_ADAPTER, 0x70, t.link_pwr_zero | (t.wipe15 << 8), t.wipe16 | (t.wipe17 << 8), 3);
+    LINE(EV_ADAPTER, 0x80, t.ring[0] | (t.ring[1] << 8), t.ring[2] | (t.ring[3] << 8), 0);
+    LINE(EV_ADAPTER, 0x90, t.ring[4] | (t.ring[5] << 8), t.ring[6] | (t.ring[7] << 8), 0);
+    LINE(EV_ADAPTER, 0xa0, t.last_cmd | (t.last_plen << 8), t.commands, 0);
+    LINE(EV_ADAPTER, 0xb0, t.out_ring_drops, t.queued_high, 1);
+    LINE(EV_ADAPTER, 0xc0, t.gba_restarts, t.trace_snapshots, 3);
+    LINE(EV_BRIDGE, 0, t.hold_dropped, t.reordered, 3);
+    LINE(EV_BRIDGE, 2, t.bad_frames, t.decrypt_failures, 3);
+    LINE(EV_BRIDGE, 4, t.host_skips, t.host_long_skips, 0);
+    LINE(EV_BRIDGE, 6, s.child_commands, s.echoes, 0);
+    LINE(EV_BRIDGE, 8, t.rx_body_max, t.unzip_last_error, 3);
+    LINE(EV_BRIDGE, 10, t.overflow, t.unzip_failures, 3);
+#undef LINE
+    return n;
 }
 
-static void log_counters(int64_t now_ms, bool changed)
+static counter_line_t logged_lines[COUNTER_LINES];
+static int logged_count;
+
+static bool line_moved(const counter_line_t *now, const counter_line_t *then)
 {
-    uint8_t why = changed ? 1 : 0;
-    log_event(now_ms, EV_ADAPTER, (uint8_t)(0x10 | why), t.park_drops, t.uart_overflows);
-    log_event(now_ms, EV_ADAPTER, (uint8_t)(0x20 | why), t.fifo_drops, (uint16_t)(t.fifo_high | (t.park_high << 8)));
-    log_event(now_ms, EV_ADAPTER, (uint8_t)(0x30 | why), t.aborts, t.retries);
-    log_event(now_ms, EV_ADAPTER, (uint8_t)(0x40 | why), (uint16_t)(t.sd_resets | (t.deliv_fail << 8)),
-              (uint16_t)((t.err_responses > 255 ? 255 : t.err_responses) | ((t.login_restarts > 255 ? 255 : t.login_restarts) << 8)));
-    log_event(now_ms, EV_ADAPTER, (uint8_t)(0x50 | why), t.park_idle_drops, t.comstate);
-    log_event(now_ms, EV_ADAPTER, (uint8_t)(0x60 | why), (uint16_t)(t.ev_timeo | (t.ev_disc << 8)), (uint16_t)(t.ev_data | (t.ev_rtx << 8)));
-    log_event(now_ms, EV_ADAPTER, (uint8_t)(0x70 | why), (uint16_t)(t.link_pwr_zero | (t.wipe15 << 8)), (uint16_t)(t.wipe16 | (t.wipe17 << 8)));
-    log_event(now_ms, EV_ADAPTER, (uint8_t)(0x80 | why), (uint16_t)(t.ring[0] | (t.ring[1] << 8)), (uint16_t)(t.ring[2] | (t.ring[3] << 8)));
-    log_event(now_ms, EV_ADAPTER, (uint8_t)(0x90 | why), (uint16_t)(t.ring[4] | (t.ring[5] << 8)), (uint16_t)(t.ring[6] | (t.ring[7] << 8)));
-    log_event(now_ms, EV_ADAPTER, (uint8_t)(0xa0 | why), (uint16_t)(t.last_cmd | (t.last_plen << 8)), t.commands);
-    log_event(now_ms, EV_ADAPTER, (uint8_t)(0xb0 | why), t.out_ring_drops, t.queued_high);
-    log_event(now_ms, EV_ADAPTER, (uint8_t)(0xc0 | why), t.gba_restarts, t.trace_snapshots);
-    log_event(now_ms, EV_BRIDGE, why, t.hold_dropped, (uint16_t)(t.reordered | (t.overflow << 8)));
-    log_event(now_ms, EV_BRIDGE, (uint8_t)(2 | why), t.bad_frames, (uint16_t)(t.decrypt_failures | (t.unzip_failures << 8)));
-    log_event(now_ms, EV_BRIDGE, (uint8_t)(4 | why), t.host_skips, t.host_long_skips);
-    log_event(now_ms, EV_BRIDGE, (uint8_t)(6 | why), s.child_commands, s.echoes);
-    t.last_logged = now_ms;
-    t.last_hash = loss_hash();
+    return ((now->watch & 1) && now->b != then->b) || ((now->watch & 2) && now->c != then->c);
+}
+
+/* periodic: every line. Otherwise the watched lines that moved, plus the context lines
+   (adapter state, command ring, clock skips, command/echo counts). */
+static void log_counters(int64_t now_ms, bool periodic)
+{
+    counter_line_t current[COUNTER_LINES];
+    int n = counter_lines(current);
+    for (int i = 0; i < n; ++i)
+    {
+        bool moved = i >= logged_count || line_moved(&current[i], &logged_lines[i]);
+        if (periodic || current[i].watch == 0 || moved)
+            log_event(now_ms, current[i].type, (uint8_t)(current[i].a | (periodic ? 0 : 1)), current[i].b, current[i].c);
+    }
+    memcpy(logged_lines, current, (size_t)n * sizeof(current[0]));
+    logged_count = n;
 }
 
 static void consider_logging(int64_t now_ms)
 {
     if (!t.seen) return;
-    bool changed = loss_hash() != t.last_hash;
-    if (changed && now_ms - t.last_change_logged >= 1000) { t.last_change_logged = now_ms; log_counters(now_ms, true); }
-    else if (now_ms - t.last_logged >= TELEMETRY_PERIOD_MS) log_counters(now_ms, false);
+    if (now_ms - t.last_logged >= TELEMETRY_PERIOD_MS)
+    {
+        t.last_logged = now_ms;
+        log_counters(now_ms, true);
+        return;
+    }
+    if (now_ms - t.last_change_logged < CHANGE_LOG_MS) return;
+    counter_line_t current[COUNTER_LINES];
+    int n = counter_lines(current);
+    bool moved = n != logged_count;
+    for (int i = 0; i < n && !moved; ++i) moved = line_moved(&current[i], &logged_lines[i]);
+    if (!moved) return;
+    t.last_change_logged = now_ms;
+    log_counters(now_ms, false);
 }
 
 void trade_shim_adapter(int64_t now_ms, const uint8_t *f, size_t n)
@@ -269,14 +363,17 @@ void trade_shim_adapter(int64_t now_ms, const uint8_t *f, size_t n)
         printf("LDN_BRIDGE adapter was reset by the GBA mid-link; its exchange trace is in LDN_SHIM_LOG\n");
     }
     else return;
-    if (!t.seen) { t.seen = true; log_counters(now_ms, false); return; }
+    if (!t.seen) { t.seen = true; t.last_logged = now_ms; log_counters(now_ms, true); return; }
     consider_logging(now_ms);
 }
 
 void trade_shim_bridge_counters(int64_t now_ms, uint16_t reordered, uint16_t hold_dropped, uint16_t overflow, uint16_t queued,
                                 uint16_t bad_frames, uint16_t decrypt_failures, uint16_t unzip_failures,
-                                uint16_t host_skips, uint16_t host_long_skips)
+                                uint16_t host_skips, uint16_t host_long_skips,
+                                uint16_t rx_body_max, uint16_t unzip_last_error)
 {
+    t.rx_body_max = rx_body_max;
+    t.unzip_last_error = unzip_last_error;
     t.host_skips = host_skips;
     t.host_long_skips = host_long_skips;
     t.reordered = reordered;
@@ -342,8 +439,10 @@ static size_t build_child_frame(uint8_t *out, uint8_t tag, uint16_t round)
     return 16;
 }
 
-size_t trade_shim_child(uint8_t *payload, size_t length, int64_t now_ms, uint8_t *reply, size_t reply_capacity)
+size_t trade_shim_child(uint8_t *payload, size_t length, int64_t now_ms, uint8_t *reply, size_t reply_capacity, bool *forward)
 {
+    if (forward) *forward = true;
+    s.clock_ms = now_ms;
     if (length < 16) return 0;
     if (((rd16(payload) >> 10) & 15) != 4) return 0;  /* not a UNI frame */
     uint8_t *slot = payload + 2;
@@ -358,24 +457,20 @@ size_t trade_shim_child(uint8_t *payload, size_t length, int64_t now_ms, uint8_t
     {
         /* The same frame twice in a row: the adapter handed one GBA transfer over again
            (librfu re-runs an exchange whose acknowledgement it misread). The game's own
-           commands always advance the tag, so this is not a new command. Forward it as
-           it went the first time, so the bridge's repeat filter drops it and the parent
-           never counts it; renumbering it would make the parent act on it twice. */
-        slot[0] = (uint8_t)((s.last_frame_tag << 5) | index);
-        if (command == RFUCMD_READY_EXIT_STANDBY) wr16(slot + 2, (uint16_t)to_parent(rd16(slot + 2)));
+           commands always advance the tag, so this is not a new command; forwarding it
+           would make the parent act on it twice. */
+        if (forward) *forward = false;
         ++s.duplicates;
         return 0;
     }
     memcpy(s.last_frame, payload, 16);
     s.have_last_frame = true;
-    /* Every command frame leaves here with the tag that follows the last one forwarded.
-       The parent accepts a command only when its tag is the previous one plus one and
-       gives up on the child after five misses in a row, so a gap in the child's own
-       stamps must not reach it: a frame lost between the GBA and this point (the
-       block-level resend below repairs that) or the game's block-resend path, which
-       queues fragments without a stamp (HandleSendFailure), so they arrive as tag 0.
-       The raw stamps are still checked, for the log. */
-    uint8_t tag = s.have_tag ? (uint8_t)((s.last_tag + 1) & 7) : raw_tag;
+    /* Sequence tags are stamped when a frame is actually sent (trade_shim_stamp). The
+       parent accepts a command only when its tag is the previous one plus one and gives
+       up on the child after five misses in a row, so the child's own stamps must not
+       reach it: a frame lost between the GBA and the Switch, or the game's block-resend
+       path, which queues fragments without a stamp (HandleSendFailure) so they arrive as
+       tag 0, would break the sequence. The raw stamps are still checked, for the log. */
     bool resend = false;
     if (s.raw_tag_valid && raw_tag != ((s.last_raw_tag + 1) & 7))
     {
@@ -383,7 +478,7 @@ size_t trade_shim_child(uint8_t *payload, size_t length, int64_t now_ms, uint8_t
         if (resend)
         {
             ++s.resends_restamped;
-            log_event(now_ms, EV_NOTE, TRADE_SHIM_NOTE_RESTAMPED_RESEND, index, tag);
+            log_event(now_ms, EV_NOTE, TRADE_SHIM_NOTE_RESTAMPED_RESEND, index, 0);
         }
         else
         {
@@ -396,11 +491,7 @@ size_t trade_shim_child(uint8_t *payload, size_t length, int64_t now_ms, uint8_t
         s.last_raw_tag = raw_tag;
         s.raw_tag_valid = true;
     }
-    slot[0] = (uint8_t)((tag << 5) | index);
-    s.last_tag = tag;
-    s.last_frame_tag = tag;
     s.have_tag = true;
-    ++s.child_commands;
     if (command == RFUCMD_SEND_BLOCK_INIT)
     {
         uint16_t count = rd16(slot + 2);
@@ -436,7 +527,7 @@ size_t trade_shim_child(uint8_t *payload, size_t length, int64_t now_ms, uint8_t
     int c = rd16(slot + 2), p = to_parent(c);
     wr16(slot + 2, (uint16_t)p);
     if (p > s.last_child_round) s.last_child_round = p;
-    log_event(now_ms, EV_CHILD_STANDBY, (uint8_t)((raw_tag << 4) | tag), (uint16_t)c, (uint16_t)p);
+    log_event(now_ms, EV_CHILD_STANDBY, raw_tag, (uint16_t)c, (uint16_t)p);
 
     /* The parent answered this barrier already and has left it; it will never answer
        again, so the child's retry means the answer was lost on its way down. Complete
@@ -464,6 +555,7 @@ size_t trade_shim_child(uint8_t *payload, size_t length, int64_t now_ms, uint8_t
 size_t trade_shim_host(uint8_t *payload, size_t length, int64_t now_ms, uint8_t *pre, size_t pre_capacity)
 {
     size_t pre_len = 0;
+    s.clock_ms = now_ms;
     if (length < 3) return 0;
     uint32_t header = payload[0] | (payload[1] << 8) | ((uint32_t)payload[2] << 16);
     if (((header >> 14) & 15) != 4) return 0;           /* not a UNI frame */
@@ -475,7 +567,18 @@ size_t trade_shim_host(uint8_t *payload, size_t length, int64_t now_ms, uint8_t 
         uint16_t command = rd16(slot), value = rd16(slot + 2);
         if (command == 0) continue;
         s.quiet_since = now_ms;
-        if (i == 1) ++s.echoes;
+        if (i == 1)
+        {
+            ++s.echoes;
+            s.echo_ring[s.echo_head].ms = (uint32_t)now_ms;
+            s.echo_ring[s.echo_head].command = command;
+            s.echo_head = (s.echo_head + 1) % 16;
+            if (s.echo_count < 16) ++s.echo_count;
+            s.last_echo_ms = now_ms;
+            s.sent_since_echo = 0;
+            if (s.echo_stall_reported) incident_resolved(now_ms, 2);
+            s.echo_stall_reported = false;
+        }
         if (i == 1 && (command & 0xff00) == RFUCMD_SEND_BLOCK && s.cb.active)
         {
             uint8_t index = (uint8_t)(command & 0x1f);
@@ -594,20 +697,17 @@ size_t trade_shim_inject(int64_t now_ms, uint8_t *out, size_t capacity)
         if (!due) return 0;
         int next = s.last_round > s.last_child_round ? s.last_round : s.last_child_round;
         s.fake_round = next + 1;
-        s.fake_tag = (uint8_t)((s.last_tag + 1) & 7);
         add_fake(s.fake_round);
-        s.last_tag = s.fake_tag;
-        ++s.child_commands;
         s.injected = true;
         s.fake_acked = false;
         s.attempts = 1;
         s.injected_at = now_ms;
         s.quiet_since = now_ms;
         ++s.injections;
-        log_event(now_ms, EV_INJECT, s.fake_tag, (uint16_t)s.fake_round, (uint16_t)s.answers_since_confirm);
+        log_event(now_ms, EV_INJECT, 0, (uint16_t)s.fake_round, (uint16_t)s.answers_since_confirm);
         printf("LDN_BRIDGE supplied standby round %d on the GBA's behalf after %d answered rounds\n",
                s.fake_round, s.answers_since_confirm);
-        return build_child_frame(out, s.fake_tag, (uint16_t)s.fake_round);
+        return build_child_frame(out, 0, (uint16_t)s.fake_round);
     }
     if (s.fake_acked || now_ms - s.injected_at < TRADE_SHIM_ACK_MS) return 0;
     if (s.attempts >= TRADE_SHIM_MAX_ATTEMPTS)
@@ -615,15 +715,14 @@ size_t trade_shim_inject(int64_t now_ms, uint8_t *out, size_t capacity)
         if (s.give_ups == s.injections - 1) { ++s.give_ups; log_event(now_ms, EV_GIVE_UP, 0, (uint16_t)s.fake_round, 0); }
         return 0;
     }
-    /* Same round and the same tag: if the first copy never reached the parent's game its
-       tag is still the one expected; if it did and the answer is merely late, this copy
-       is a harmless duplicate. */
+    /* Same round again. If the parent's game did see the first copy and its answer is
+       merely late, this one arrives after the round completed and is ignored as a
+       number that no longer matches. */
     ++s.attempts;
-    ++s.child_commands;
     s.injected_at = now_ms;
-    log_event(now_ms, EV_INJECT, s.fake_tag, (uint16_t)s.fake_round, (uint16_t)(0x100 | s.attempts));
+    log_event(now_ms, EV_INJECT, 0, (uint16_t)s.fake_round, (uint16_t)(0x100 | s.attempts));
     printf("LDN_BRIDGE no answer to the supplied round %d, sending it again (attempt %d)\n", s.fake_round, s.attempts);
-    return build_child_frame(out, s.fake_tag, (uint16_t)s.fake_round);
+    return build_child_frame(out, 0, (uint16_t)s.fake_round);
 }
 
 size_t trade_shim_host_inject(int64_t now_ms, uint8_t *out, size_t capacity)
@@ -644,89 +743,219 @@ size_t trade_shim_host_inject(int64_t now_ms, uint8_t *out, size_t capacity)
     return build_host_frame(out, RFUCMD_SEND_BLOCK_REQ, (uint16_t)s.request_type, 0, 0);
 }
 
+void trade_shim_stamp(uint8_t *payload, size_t length)
+{
+    if (length < 4 || ((rd16(payload) >> 10) & 15) != 4 || payload[3] == 0) return;   /* idle frames carry no tag */
+    payload[2] = (uint8_t)((s.send_tag << 5) | (payload[2] & 0x1f));
+    s.sent_ring[s.sent_head].ms = (uint32_t)s.clock_ms;
+    s.sent_ring[s.sent_head].command = (uint16_t)((payload[3] << 8) | (payload[2] & 0x1f));
+    s.sent_ring[s.sent_head].tag = s.send_tag;
+    s.sent_head = (s.sent_head + 1) % 16;
+    if (s.sent_count < 16) ++s.sent_count;
+    s.send_tag = (uint8_t)((s.send_tag + 1) & 7);
+    ++s.child_commands;
+    ++s.sent_since_echo;
+}
+
+static void log_rings(void)
+{
+    for (int i = 0; i < s.sent_count; ++i)
+    {
+        int at = (s.sent_head + 16 - s.sent_count + i) % 16;
+        log_event_at(s.sent_ring[at].ms, EV_SENT, s.sent_ring[at].tag, s.sent_ring[at].command, 0);
+    }
+    for (int i = 0; i < s.echo_count; ++i)
+    {
+        int at = (s.echo_head + 16 - s.echo_count + i) % 16;
+        log_event_at(s.echo_ring[at].ms, EV_ECHO, 0, s.echo_ring[at].command, 0);
+    }
+}
+
+static uint16_t clamp16(int64_t v) { return v < 0 ? 0 : v > 65535 ? 65535 : (uint16_t)v; }
+
+void trade_shim_poll(int64_t now_ms)
+{
+    s.clock_ms = now_ms;
+    /* Commands keep going to the parent and none come back: its game has stopped taking
+       the child's frames (a sequence it rejected, or its own link error). */
+    if (!s.echo_stall_reported && s.sent_since_echo >= 6 && s.last_echo_ms && now_ms - s.last_echo_ms >= 2000)
+    {
+        s.echo_stall_reported = true;
+        bool fresh = incident_begin();
+        if (fresh) incident_reason = 2;
+        log_event(now_ms, EV_NOTE, TRADE_SHIM_NOTE_ECHO_STALL, (uint16_t)s.sent_since_echo, clamp16(now_ms - s.last_echo_ms));
+        log_rings();
+        if (fresh) incident_end();
+        printf("LDN_BRIDGE Switch stopped echoing the GBA's commands (%d unechoed)\n", s.sent_since_echo);
+    }
+}
+
+void trade_shim_pia_recovered(int64_t now_ms) { incident_resolved(now_ms, 1); }
+
+void trade_shim_pia_stall(int64_t now_ms, const trade_shim_pia_t *p)
+{
+    bool fresh = incident_begin();
+    if (fresh) incident_reason = 1;
+    log_event(now_ms, EV_NOTE, TRADE_SHIM_NOTE_PIA_STALL, p->our_pending, clamp16(p->stalled_ms));
+    log_event(now_ms, EV_PIA, 1, p->our_low, p->our_next);
+    log_event(now_ms, EV_PIA, 2, p->peer_low, clamp16(p->peer_low_age_ms));
+    log_event(now_ms, EV_PIA, 3, p->peer_ack_next, clamp16(p->peer_ack_age_ms));
+    log_event(now_ms, EV_PIA, 4, clamp16(p->peer_ack_seen_age_ms), p->receive_next);
+    log_event(now_ms, EV_PIA, 5, p->out_of_order, p->credits);
+    log_event(now_ms, EV_PIA, 6, p->k_queued, p->k_inflight);
+    log_event(now_ms, EV_PIA, 7, p->out_queued, clamp16(p->overflow));
+    log_event(now_ms, EV_PIA, 8, clamp16(p->idle_evicted), s.send_tag);
+    log_rings();
+    if (fresh) incident_end();
+    printf("LDN_BRIDGE Switch has not acknowledged our frames for %d ms\n", (int)p->stalled_ms);
+}
+
 void trade_shim_status(char *out, size_t capacity)
 {
-    snprintf(out, capacity, "shim_trades=%d shim_injected=%d shim_reanswers=%d shim_rerequests=%d shim_offset=%d shim_post_trade=%d shim_last_round=%d shim_answers=%d shim_acked=%d shim_echoes=%d shim_restamps=%d shim_tag_gaps=%d shim_commands=%u shim_echoed=%u shim_dups=%d",
+    snprintf(out, capacity, "shim_trades=%d shim_injected=%d shim_reanswers=%d shim_rerequests=%d shim_offset=%d shim_post_trade=%d shim_last_round=%d shim_answers=%d shim_acked=%d shim_echoes=%d shim_restamps=%d shim_tag_gaps=%d shim_commands=%u shim_echoed=%u shim_dups=%d shim_unechoed=%d",
              s.trades, s.injections, s.reanswers, s.rerequests, s.base + s.fake_count, s.post_trade ? 1 : 0, s.last_round,
              s.answers_since_confirm, s.fake_acked ? 1 : 0, s.echoes_synthesized, s.resends_restamped, s.tag_gaps,
-             s.child_commands, s.echoes, s.duplicates);
+             s.child_commands, s.echoes, s.duplicates, s.sent_since_echo);
 }
 
 static const char *const kEventNames[] = {
     "?", "BOOT", "RESET", "CONFIRM", "PARENT_STANDBY", "CHILD_STANDBY", "REQUEST", "INJECT",
-    "ACK", "REANSWER", "REREQUEST", "NOTE", "HOST_BLOCK", "GIVE_UP", "ADAPTER", "BRIDGE", "TRACE" };
-static const char *const kNoteNames[] = { "?", "bridge start", "child connect", "child disconnect", "host disconnect", "bridge stop", "host silence ms", "parent disconnect cmd", "child tag gap prev/now", "switch clock skip frames/ms", "echo synthesized idx/count", "parent fragment gap expect/got", "echo gap mask/count", "restamped resend idx/tag", "adapter trace seq count<<8|restarts" };
+    "ACK", "REANSWER", "REREQUEST", "NOTE", "HOST_BLOCK", "GIVE_UP", "ADAPTER", "BRIDGE", "TRACE",
+    "SENT", "ECHO", "PIA" };
+static const char *const kNoteNames[] = { "?", "bridge start", "child connect", "child disconnect", "host disconnect", "bridge stop", "host silence ms", "parent disconnect cmd", "child tag gap prev/now", "switch clock skip frames/ms", "echo synthesized idx/count", "parent fragment gap expect/got", "echo gap mask/count", "restamped resend idx/tag", "adapter trace seq count<<8|restarts", "unzip failure error/wire bytes", "echo stall unechoed/ms", "pia stall pending/ms", "stall recovered pia=1/echo=2" };
 static const char *const kTraceKinds[] = { "?", "cmd", "event", "restart_in_state", "delivery", "sd_reset_in_state", "login" };
 
-void trade_shim_dump(void (*emit)(const char *line))
+static void format_entry(const log_entry_t *e, char *line, size_t cap)
+{
+    const char *name = e->type < sizeof(kEventNames) / sizeof(kEventNames[0]) ? kEventNames[e->type] : "?";
+    double t = e->ms / 1000.0;
+    switch (e->type)
+    {
+    case EV_BOOT: snprintf(line, cap, "  %9.3f %s reset_reason=%u boot=%u", t, name, e->a, e->b); break;
+    case EV_CONFIRM: snprintf(line, cap, "  %9.3f %s trade=%u parent_count=%u", t, name, e->b, e->c); break;
+    case EV_PARENT_STANDBY:
+        if (e->c == 0xffff) snprintf(line, cap, "  %9.3f %s slot=%u round=%u suppressed", t, name, e->a, e->b);
+        else snprintf(line, cap, "  %9.3f %s slot=%u round=%u to_gba=%u", t, name, e->a, e->b, e->c);
+        break;
+    case EV_CHILD_STANDBY: snprintf(line, cap, "  %9.3f %s round=%u to_switch=%u raw_tag=%u", t, name, e->b, e->c, e->a); break;
+    case EV_REQUEST: snprintf(line, cap, "  %9.3f %s type=%u%s", t, name, e->b, e->a ? " (post-trade watch ends)" : ""); break;
+    case EV_INJECT: snprintf(line, cap, "  %9.3f %s round=%u %s%u", t, name, e->b, (e->c & 0x100) ? "attempt=" : "after_answers=", e->c & 0xff); break;
+    case EV_SENT: snprintf(line, cap, "  %9.3f %s tag=%u command=%04x", t, name, e->a, e->b); break;
+    case EV_ECHO: snprintf(line, cap, "  %9.3f %s command=%04x", t, name, e->b); break;
+    case EV_PIA:
+        switch (e->a)
+        {
+        case 1: snprintf(line, cap, "  %9.3f %s our_low=%04x our_next=%04x", t, name, e->b, e->c); break;
+        case 2: snprintf(line, cap, "  %9.3f %s switch_low=%04x unchanged_ms=%u", t, name, e->b, e->c); break;
+        case 3: snprintf(line, cap, "  %9.3f %s switch_ack_next=%04x unchanged_ms=%u", t, name, e->b, e->c); break;
+        case 4: snprintf(line, cap, "  %9.3f %s switch_ack_seen_ms_ago=%u our_receive_next=%04x", t, name, e->b, e->c); break;
+        case 5: snprintf(line, cap, "  %9.3f %s out_of_order=%u credits=%u", t, name, e->b, e->c); break;
+        case 6: snprintf(line, cap, "  %9.3f %s k_queued=%u k_inflight=%u", t, name, e->b, e->c); break;
+        case 7: snprintf(line, cap, "  %9.3f %s out_queued=%u overflow=%u", t, name, e->b, e->c); break;
+        default: snprintf(line, cap, "  %9.3f %s idle_evicted=%u next_tag=%u", t, name, e->b, e->c); break;
+        }
+        break;
+    case EV_ACK: case EV_GIVE_UP: snprintf(line, cap, "  %9.3f %s round=%u", t, name, e->b); break;
+    case EV_REANSWER: snprintf(line, cap, "  %9.3f %s gba_round=%u switch_round=%u", t, name, e->b, e->c); break;
+    case EV_REREQUEST:
+        if (e->a) snprintf(line, cap, "  %9.3f %s type=%u attempt=%u", t, name, e->b, e->a);
+        else snprintf(line, cap, "  %9.3f %s type=%u (with a re-answer)", t, name, e->b);
+        break;
+    case EV_NOTE: snprintf(line, cap, "  %9.3f %s %s %u %u", t, name,
+                           e->a < sizeof(kNoteNames) / sizeof(kNoteNames[0]) ? kNoteNames[e->a] : "?", e->b, e->c); break;
+    case EV_HOST_BLOCK: snprintf(line, cap, "  %9.3f %s fragments=%u", t, name, e->b); break;
+    case EV_ADAPTER:
+    {
+        const char *why = (e->a & 1) ? "changed" : "periodic";
+        switch (e->a & 0xf0)
+        {
+        case 0x10: snprintf(line, cap, "  %9.3f %s %s park_drops=%u uart_overflows=%u", t, name, why, e->b, e->c); break;
+        case 0x20: snprintf(line, cap, "  %9.3f %s %s fifo_drops=%u fifo_high=%u park_high=%u", t, name, why, e->b, e->c & 0xff, e->c >> 8); break;
+        case 0x30: snprintf(line, cap, "  %9.3f %s %s delivery_aborts=%u delivery_retries=%u", t, name, why, e->b, e->c); break;
+        case 0x40: snprintf(line, cap, "  %9.3f %s %s sd_resets=%u deliv_fail=%02x err_responses=%u login_restarts=%u", t, name, why, e->b & 0xff, e->b >> 8, e->c & 0xff, e->c >> 8); break;
+        case 0x50: snprintf(line, cap, "  %9.3f %s %s park_idle_drops=%u comstate=%u", t, name, why, e->b, e->c); break;
+        case 0x60: snprintf(line, cap, "  %9.3f %s %s events timeo=%u disc=%u data=%u rtx=%u", t, name, why, e->b & 0xff, e->b >> 8, e->c & 0xff, e->c >> 8); break;
+        case 0x70: snprintf(line, cap, "  %9.3f %s %s link_pwr_zero=%u wipes evict/netdisc=%02x hoststart/cmddisc=%02x reset/occupancy=%02x", t, name, why, e->b & 0xff, e->b >> 8, e->c & 0xff, e->c >> 8); break;
+        case 0x80: snprintf(line, cap, "  %9.3f %s %s gba_cmd_ring[0..3]=%02x %02x %02x %02x", t, name, why, e->b & 0xff, e->b >> 8, e->c & 0xff, e->c >> 8); break;
+        case 0x90: snprintf(line, cap, "  %9.3f %s %s gba_cmd_ring[4..7]=%02x %02x %02x %02x", t, name, why, e->b & 0xff, e->b >> 8, e->c & 0xff, e->c >> 8); break;
+        case 0xa0: snprintf(line, cap, "  %9.3f %s %s last_cmd=%02x plen=%u commands=%u", t, name, why, e->b & 0xff, e->b >> 8, e->c); break;
+        case 0xc0: snprintf(line, cap, "  %9.3f %s %s gba_restarts=%u trace_snapshots=%u", t, name, why, e->b, e->c); break;
+        default:   snprintf(line, cap, "  %9.3f %s %s out_ring_drops=%u bridge_queue_high=%u", t, name, why, e->b, e->c); break;
+        }
+        break;
+    }
+    case EV_TRACE:
+        snprintf(line, cap, "  %9.3f %s +%ums %s %02x", t, name, e->c,
+                 e->a < sizeof(kTraceKinds) / sizeof(kTraceKinds[0]) ? kTraceKinds[e->a] : "?", e->b);
+        break;
+    case EV_BRIDGE:
+    {
+        const char *why = (e->a & 1) ? "changed" : "periodic";
+        switch (e->a & 0xfe)
+        {
+        case 2: snprintf(line, cap, "  %9.3f %s %s bad_frames=%u decrypt_failures=%u", t, name, why, e->b, e->c); break;
+        case 4: snprintf(line, cap, "  %9.3f %s %s host_clock_skips single=%u multi=%u", t, name, why, e->b, e->c); break;
+        case 6: snprintf(line, cap, "  %9.3f %s %s child_commands=%u echoed=%u", t, name, why, e->b, e->c); break;
+        case 8: snprintf(line, cap, "  %9.3f %s %s rx_body_max=%u unzip_last_error=%u", t, name, why, e->b, e->c); break;
+        case 10: snprintf(line, cap, "  %9.3f %s %s outbound_overflow=%u unzip_failures=%u", t, name, why, e->b, e->c); break;
+        default: snprintf(line, cap, "  %9.3f %s %s hold_dropped=%u reordered=%u", t, name, why, e->b, e->c); break;
+        }
+        break;
+    }
+    default: snprintf(line, cap, "  %9.3f %s %u %u %u", t, name, e->a, e->b, e->c); break;
+    }
+}
+
+static struct { int phase, index, head, count; } dump;
+
+void trade_shim_dump_begin(void) { dump.phase = 0; dump.index = 0; }
+
+bool trade_shim_dump_step(void (*emit)(const char *line), int max_lines)
 {
     char line[128];
-    if (rtc_log.magic != LOG_MAGIC) { emit("LDN_SHIM_LOG empty"); return; }
-    snprintf(line, sizeof(line), "LDN_SHIM_LOG entries=%u boots=%u", rtc_log.count, rtc_log.boots);
-    emit(line);
-    for (int i = 0; i < rtc_log.count; ++i)
+    for (; max_lines > 0; --max_lines)
     {
-        const log_entry_t *e = &rtc_log.entries[(rtc_log.head + i) % LOG_SLOTS];
-        const char *name = e->type < sizeof(kEventNames) / sizeof(kEventNames[0]) ? kEventNames[e->type] : "?";
-        double t = e->ms / 1000.0;
-        switch (e->type)
+        switch (dump.phase)
         {
-        case EV_BOOT: snprintf(line, sizeof(line), "  %9.3f %s reset_reason=%u boot=%u", t, name, e->a, e->b); break;
-        case EV_CONFIRM: snprintf(line, sizeof(line), "  %9.3f %s trade=%u parent_count=%u", t, name, e->b, e->c); break;
-        case EV_PARENT_STANDBY:
-            if (e->c == 0xffff) snprintf(line, sizeof(line), "  %9.3f %s slot=%u round=%u suppressed", t, name, e->a, e->b);
-            else snprintf(line, sizeof(line), "  %9.3f %s slot=%u round=%u to_gba=%u", t, name, e->a, e->b, e->c);
-            break;
-        case EV_CHILD_STANDBY: snprintf(line, sizeof(line), "  %9.3f %s round=%u to_switch=%u tag=%u->%u", t, name, e->b, e->c, e->a >> 4, e->a & 15); break;
-        case EV_REQUEST: snprintf(line, sizeof(line), "  %9.3f %s type=%u%s", t, name, e->b, e->a ? " (post-trade watch ends)" : ""); break;
-        case EV_INJECT: snprintf(line, sizeof(line), "  %9.3f %s round=%u tag=%u %s%u", t, name, e->b, e->a, (e->c & 0x100) ? "attempt=" : "after_answers=", e->c & 0xff); break;
-        case EV_ACK: case EV_GIVE_UP: snprintf(line, sizeof(line), "  %9.3f %s round=%u", t, name, e->b); break;
-        case EV_REANSWER: snprintf(line, sizeof(line), "  %9.3f %s gba_round=%u switch_round=%u", t, name, e->b, e->c); break;
-        case EV_REREQUEST:
-            if (e->a) snprintf(line, sizeof(line), "  %9.3f %s type=%u attempt=%u", t, name, e->b, e->a);
-            else snprintf(line, sizeof(line), "  %9.3f %s type=%u (with a re-answer)", t, name, e->b);
-            break;
-        case EV_NOTE: snprintf(line, sizeof(line), "  %9.3f %s %s %u %u", t, name,
-                               e->a < sizeof(kNoteNames) / sizeof(kNoteNames[0]) ? kNoteNames[e->a] : "?", e->b, e->c); break;
-        case EV_HOST_BLOCK: snprintf(line, sizeof(line), "  %9.3f %s fragments=%u", t, name, e->b); break;
-        case EV_ADAPTER:
-        {
-            const char *why = (e->a & 1) ? "changed" : "periodic";
-            switch (e->a & 0xf0)
+        case 0:
+            if (rtc_log.magic != LOG_MAGIC) { emit("LDN_SHIM_LOG empty"); dump.phase = 4; return false; }
+            if (rtc_log.incident_count)
             {
-            case 0x10: snprintf(line, sizeof(line), "  %9.3f %s %s park_drops=%u uart_overflows=%u", t, name, why, e->b, e->c); break;
-            case 0x20: snprintf(line, sizeof(line), "  %9.3f %s %s fifo_drops=%u fifo_high=%u park_high=%u", t, name, why, e->b, e->c & 0xff, e->c >> 8); break;
-            case 0x30: snprintf(line, sizeof(line), "  %9.3f %s %s delivery_aborts=%u delivery_retries=%u", t, name, why, e->b, e->c); break;
-            case 0x40: snprintf(line, sizeof(line), "  %9.3f %s %s sd_resets=%u deliv_fail=%02x err_responses=%u login_restarts=%u", t, name, why, e->b & 0xff, e->b >> 8, e->c & 0xff, e->c >> 8); break;
-            case 0x50: snprintf(line, sizeof(line), "  %9.3f %s %s park_idle_drops=%u comstate=%u", t, name, why, e->b, e->c); break;
-            case 0x60: snprintf(line, sizeof(line), "  %9.3f %s %s events timeo=%u disc=%u data=%u rtx=%u", t, name, why, e->b & 0xff, e->b >> 8, e->c & 0xff, e->c >> 8); break;
-            case 0x70: snprintf(line, sizeof(line), "  %9.3f %s %s link_pwr_zero=%u wipes evict/netdisc=%02x hoststart/cmddisc=%02x reset/occupancy=%02x", t, name, why, e->b & 0xff, e->b >> 8, e->c & 0xff, e->c >> 8); break;
-            case 0x80: snprintf(line, sizeof(line), "  %9.3f %s %s gba_cmd_ring[0..3]=%02x %02x %02x %02x", t, name, why, e->b & 0xff, e->b >> 8, e->c & 0xff, e->c >> 8); break;
-            case 0x90: snprintf(line, sizeof(line), "  %9.3f %s %s gba_cmd_ring[4..7]=%02x %02x %02x %02x", t, name, why, e->b & 0xff, e->b >> 8, e->c & 0xff, e->c >> 8); break;
-            case 0xa0: snprintf(line, sizeof(line), "  %9.3f %s %s last_cmd=%02x plen=%u commands=%u", t, name, why, e->b & 0xff, e->b >> 8, e->c); break;
-            case 0xc0: snprintf(line, sizeof(line), "  %9.3f %s %s gba_restarts=%u trace_snapshots=%u", t, name, why, e->b, e->c); break;
-            default:   snprintf(line, sizeof(line), "  %9.3f %s %s out_ring_drops=%u bridge_queue_high=%u", t, name, why, e->b, e->c); break;
+                snprintf(line, sizeof(line), "LDN_SHIM_INCIDENT entries=%u boot=%u", rtc_log.incident_count, rtc_log.incident_boot);
+                emit(line);
+                dump.phase = 1;
             }
+            else dump.phase = 2;
+            dump.index = 0;
             break;
-        }
-        case EV_TRACE:
-            snprintf(line, sizeof(line), "  %9.3f %s +%ums %s %02x", t, name, e->c,
-                     e->a < sizeof(kTraceKinds) / sizeof(kTraceKinds[0]) ? kTraceKinds[e->a] : "?", e->b);
+        case 1:
+            if (dump.index >= rtc_log.incident_count) { dump.phase = 2; dump.index = 0; break; }
+            format_entry(&rtc_log.incident[dump.index++], line, sizeof(line));
+            emit(line);
             break;
-        case EV_BRIDGE:
-        {
-            const char *why = (e->a & 1) ? "changed" : "periodic";
-            switch (e->a & 0x0e)
+        case 2:
+            snprintf(line, sizeof(line), "LDN_SHIM_LOG entries=%u boots=%u", rtc_log.count, rtc_log.boots);
+            emit(line);
+            dump.head = rtc_log.head;
+            dump.count = rtc_log.count;
+            dump.index = 0;
+            dump.phase = 3;
+            break;
+        case 3:
+            if (dump.index >= dump.count)
             {
-            case 2: snprintf(line, sizeof(line), "  %9.3f %s %s bad_frames=%u decrypt_failures=%u unzip_failures=%u", t, name, why, e->b, e->c & 0xff, e->c >> 8); break;
-            case 4: snprintf(line, sizeof(line), "  %9.3f %s %s host_clock_skips single=%u multi=%u", t, name, why, e->b, e->c); break;
-            case 6: snprintf(line, sizeof(line), "  %9.3f %s %s child_commands=%u echoed=%u", t, name, why, e->b, e->c); break;
-            default: snprintf(line, sizeof(line), "  %9.3f %s %s hold_dropped=%u reordered=%u outbound_overflow=%u", t, name, why, e->b, e->c & 0xff, e->c >> 8); break;
+                rtc_log.incident_count = 0;   /* read: the next stall may record a new one */
+                incident_reason = 0;
+                emit("LDN_SHIM_LOG end");
+                dump.phase = 4;
+                return false;
             }
+            format_entry(&rtc_log.entries[(dump.head + dump.index++) % LOG_SLOTS], line, sizeof(line));
+            emit(line);
             break;
+        default:
+            return false;
         }
-        default: snprintf(line, sizeof(line), "  %9.3f %s %u %u %u", t, name, e->a, e->b, e->c); break;
-        }
-        emit(line);
     }
+    return true;
 }

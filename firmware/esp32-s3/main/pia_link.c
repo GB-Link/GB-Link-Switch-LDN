@@ -2,6 +2,7 @@
 
 #include <stdio.h>
 #include "esp_random.h"
+#include "esp_timer.h"
 
 static const uint8_t kMetadata[46] = {
     0x4a, 0x00, 0x2a, 0x00, 0x58, 0x01, 0x00, 0x4c, 0x65, 0x61, 0x66, 0x47,
@@ -32,6 +33,26 @@ void pia_link_init(pia_link_t *l, const uint8_t ssid[16], const uint8_t our_mac[
 void pia_link_set_connect(pia_link_t *l, bool wanted) { l->connect_wanted = wanted; }
 
 static void emit(pia_link_t *l, const char *message) { if (l->log) l->log(message, l->user); }
+
+static int64_t link_now_ms(void) { return esp_timer_get_time() / 1000; }
+
+static void note_peer_low(pia_link_t *l, uint16_t low)
+{
+    if (l->peer_low_valid && low == l->peer_low) return;
+    l->peer_low = low;
+    l->peer_low_moved_ms = link_now_ms();
+    l->peer_low_valid = true;
+}
+
+static void note_peer_ack(pia_link_t *l, uint16_t next)
+{
+    int64_t now = link_now_ms();
+    l->peer_ack_seen_ms = now;
+    if (l->peer_ack_valid && next == l->peer_ack_next) return;
+    l->peer_ack_next = next;
+    l->peer_ack_moved_ms = now;
+    l->peer_ack_valid = true;
+}
 
 /* ---- duplicate suppression ------------------------------------------------ */
 
@@ -78,7 +99,23 @@ void pia_link_enqueue(pia_link_t *l, const uint8_t *payload, size_t length)
        retransmit of something the peer has not consumed. Anything that differs, the
        mod-8 sequence tag included, is a distinct frame and must be forwarded. */
     if (l->last_enqueued_len == length && memcmp(l->last_enqueued, payload, length) == 0) return;
-    if (l->out_count >= PIA_OUT_SLOTS) { ++l->overflow; return; }
+    if (l->out_count >= PIA_OUT_SLOTS)
+    {
+        /* Full. An idle frame only repeats the child's empty state, so it is the one
+           to give up: the incoming frame if it is idle, else the newest queued idle one. */
+        if (is_idle(payload, length)) { ++l->idle_evicted; return; }
+        int victim = -1;
+        for (int i = l->out_count - 1; i >= 0 && victim < 0; --i)
+        {
+            int at = (l->out_head + i) % PIA_OUT_SLOTS;
+            if (is_idle(l->outbound[at].data, l->outbound[at].length)) victim = i;
+        }
+        if (victim < 0) { ++l->overflow; return; }
+        for (int i = victim; i < l->out_count - 1; ++i)
+            l->outbound[(l->out_head + i) % PIA_OUT_SLOTS] = l->outbound[(l->out_head + i + 1) % PIA_OUT_SLOTS];
+        --l->out_count;
+        ++l->idle_evicted;
+    }
     int slot = (l->out_head + l->out_count) % PIA_OUT_SLOTS;
     memcpy(l->outbound[slot].data, payload, length);
     l->outbound[slot].length = (uint16_t)length;
@@ -123,6 +160,7 @@ static int next_outbound(pia_link_t *l, uint8_t *out, size_t cap)
         int slot = l->out_head;
         l->out_head = (l->out_head + 1) % PIA_OUT_SLOTS;
         --l->out_count;
+        if (l->stamp) l->stamp(l->outbound[slot].data, l->outbound[slot].length);
         return wrap_wt(l->outbound[slot].data, l->outbound[slot].length, l->timestamp++, out, cap);
     }
     if (!l->has_idle) return -1;
@@ -267,7 +305,7 @@ void pia_link_receive(pia_link_t *l, const uint8_t *data, size_t length, const c
     ++l->rx_seen;
     if (strcmp(source, l->host) != 0) { ++l->rx_wrong_source; return; }
     if (length < 29) { ++l->rx_short; return; }
-    static uint8_t plain[PIA_MAX_BODY], app[PIA_MAX_BODY];
+    static uint8_t plain[PIA_MAX_BODY], app[PIA_MAX_INFLATE];
     int n = pia_decrypt(&l->crypto, data, length, source, plain, sizeof(plain));
     if (n < 0) { ++l->decrypt_failures; return; }
 
@@ -281,9 +319,18 @@ void pia_link_receive(pia_link_t *l, const uint8_t *data, size_t length, const c
     if (data[5] & 1)
     {
         size = pia_decompress(plain, (size_t)n, app, sizeof(app));
-        if (size < 0) { ++l->rx_unzip_fail; return; }
+        if (size < 0)
+        {
+            /* Everything in this datagram is lost, and the Switch will send it again,
+               bigger. */
+            ++l->rx_unzip_fail;
+            l->rx_unzip_last_error = -size;
+            l->rx_unzip_last_len = (int)length;
+            return;
+        }
         body = app;
     }
+    if (size > l->rx_body_max) l->rx_body_max = size;
     if (l->rx_first_len == 0 && size > 0)
     {
         l->rx_first_len = size < 16 ? size : 16;
@@ -293,23 +340,30 @@ void pia_link_receive(pia_link_t *l, const uint8_t *data, size_t length, const c
         l->rx_first_footer = footer;
     }
 
-    pia_message_t messages[PIA_MAX_MESSAGES];
-    int count = pia_messages_decode(body, (size_t)size, messages, PIA_MAX_MESSAGES);
-    l->rx_messages += count;
-    for (int i = 0; i < count; ++i)
+    /* Every message, however many: a frame skipped here is never acknowledged, so the
+       Switch keeps re-sending it inside ever larger batches. */
+    pia_message_iter_t it;
+    pia_message_iter_init(&it, body, (size_t)size);
+    pia_message_t message;
+    int count = 0;
+    while (pia_message_next(&it, &message))
     {
-        if (messages[i].protocol != 10) { pia_conn_feed(&l->conn, &messages[i], l->tick); continue; }
-        const uint8_t *p = messages[i].payload;
-        if (messages[i].length < 8 || bin_b16(p + 1) > messages[i].length - 8 || p[7] != 0)
+        ++l->rx_messages;
+        if (++count > l->rx_msgs_max) l->rx_msgs_max = count;
+        if (message.protocol != 10) { pia_conn_feed(&l->conn, &message, l->tick); continue; }
+        const uint8_t *p = message.payload;
+        if (message.length < 8 || bin_b16(p + 1) > message.length - 8 || p[7] != 0)
         { ++l->rx_bad_frame; return; }
         uint16_t seq = bin_b16(p + 3);
         const uint8_t *inner = p + 8;
         uint16_t inner_len = bin_b16(p + 1);
         if ((p[0] & 1) == 0)
         {
+            if (inner_len >= 4) note_peer_ack(l, bin_b16(inner + 2));
             pia_reliable_acknowledge(&l->reliable, inner, inner_len, l->tick * (1000.0 / 59.727));
             continue;
         }
+        note_peer_low(l, bin_b16(p + 5));
         l->ack_owed = true;
         if (seen_add(l, seq)) resequence(l, seq, inner, inner_len);
         pia_reliable_receive(&l->reliable, seq, bin_b16(p + 5));

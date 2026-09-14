@@ -72,6 +72,7 @@ typedef struct
     int lose_parent_answer;  /* parent numbering of one answer whose copies never reach the child, 0 none */
     int child_busy_ms;       /* the child's link layer stays busy this long after each party block (a resend loop) */
     int duplicate_every;     /* the adapter hands every Nth child command frame over twice, 0 never */
+    int drop_queued_command; /* the bridge's queue loses the Nth command frame before it is sent, 0 never */
 } scenario_t;
 
 static uint16_t g_serial;
@@ -254,7 +255,7 @@ static int run(const char *label, scenario_t sc, int verbose)
     p.script = sc.parent_five_rounds ? parent_script_five : parent_script_six;
     memset(&bq, 0, sizeof(bq)); memset(&hq, 0, sizeof(hq));
     g_serial = 0;
-    int child_frames = 0;
+    int child_frames = 0, queued_commands = 0;
     trade_shim_reset();
     bool fake_dropped = false;
     int lost_answer_copies = 0;
@@ -279,19 +280,21 @@ static int run(const char *label, scenario_t sc, int verbose)
         }
         uint8_t raw[16];
         memcpy(raw, cf, 16);
+        bool forward = true;
         if (sc.shim)
         {
             uint8_t reply[146];
-            size_t r = trade_shim_child(cf, 16, now, reply, sizeof(reply));
+            size_t r = trade_shim_child(cf, 16, now, reply, sizeof(reply), &forward);
             for (size_t o = 0; o + 73 <= r; o += 73) host_enqueue(reply + o);
         }
-        bridge_enqueue(cf);
+        if (forward) bridge_enqueue(cf);
         if (sc.duplicate_every && raw[3] != 0 && ++child_frames % sc.duplicate_every == 0)
         {
             /* The same GBA transfer handed over again. */
             uint8_t reply[146];
-            if (sc.shim) trade_shim_child(raw, 16, now, reply, sizeof(reply));
-            bridge_enqueue(raw);
+            bool again = true;
+            if (sc.shim) trade_shim_child(raw, 16, now, reply, sizeof(reply), &again);
+            if (again) bridge_enqueue(raw);
         }
         if (sc.shim)
         {
@@ -305,7 +308,14 @@ static int run(const char *label, scenario_t sc, int verbose)
 
         /* Bridge -> parent: one frame per tick. */
         uint8_t pf[16] = {0x0e, 0x10};
-        if (bq.count) { memcpy(pf, bq.f[bq.head], 16); bq.head = (bq.head + 1) % 64; --bq.count; }
+        if (bq.count)
+        {
+            memcpy(pf, bq.f[bq.head], 16); bq.head = (bq.head + 1) % 64; --bq.count;
+            if (sc.drop_queued_command && pf[3] != 0 && ++queued_commands == sc.drop_queued_command)
+                memset(pf + 2, 0, 14);                /* lost before it was sent: nothing reaches the parent */
+            if (sc.shim) trade_shim_stamp(pf, 16);   /* as pia_link does when the frame leaves */
+        }
+        if (sc.shim) trade_shim_poll(now);
         memset(&p.recv, 0, sizeof(p.recv));
         if (pf[3] != 0)
         {
@@ -412,7 +422,8 @@ static int unit_request_repeat(void)
     for (int i = 0; i < 17; ++i)
     {
         child_command_frame(cf, (uint8_t)(i & 7), (uint16_t)(CMD_BLOCK | i), 0x1111);
-        trade_shim_child(cf, 16, 1020 + 17 * i, reply, sizeof(reply));
+        bool fwd;
+        trade_shim_child(cf, 16, 1020 + 17 * i, reply, sizeof(reply), &fwd);
     }
     if (trade_shim_host_inject(5000, out, sizeof(out)) != 0) { printf("  unit: FAIL request repeated although its block arrived\n"); ++failures; }
 
@@ -420,24 +431,29 @@ static int unit_request_repeat(void)
     host_request_frame(hf, 1);
     trade_shim_host(hf, sizeof(hf), 1000, pre, sizeof(pre));
     child_command_frame(cf, 0, CMD_STANDBY, 3);
-    trade_shim_child(cf, 16, 1500, reply, sizeof(reply));
+    bool fwd;
+    trade_shim_child(cf, 16, 1500, reply, sizeof(reply), &fwd);
     if (trade_shim_host_inject(1800, out, sizeof(out)) != 0) { printf("  unit: FAIL request repeated while the child was active\n"); ++failures; }
     if (trade_shim_host_inject(2300, out, sizeof(out)) != 73) { printf("  unit: FAIL refused request not repeated\n"); ++failures; }
     if (trade_shim_host_inject(2400, out, sizeof(out)) != 0) { printf("  unit: FAIL request repeated back to back\n"); ++failures; }
 
-    /* A frame handed over twice keeps its tag; the next real command continues the sequence. */
+    /* A frame handed over twice is not forwarded again; tags are stamped only on frames
+       that are sent, consecutively, whatever the GBA's own tags were. */
     trade_shim_reset();
+    uint8_t a[16], b[16];
+    bool fa, fdup, fb;
+    child_command_frame(a, 5, CMD_STANDBY, 1);
+    trade_shim_child(a, 16, 100, reply, sizeof(reply), &fa);
     child_command_frame(cf, 5, CMD_STANDBY, 1);
-    trade_shim_child(cf, 16, 100, reply, sizeof(reply));
-    uint8_t first_tag = cf[2] >> 5;
-    child_command_frame(cf, 5, CMD_STANDBY, 1);
-    trade_shim_child(cf, 16, 101, reply, sizeof(reply));
-    uint8_t dup_tag = cf[2] >> 5;
-    child_command_frame(cf, 6, CMD_STANDBY, 2);
-    trade_shim_child(cf, 16, 102, reply, sizeof(reply));
-    uint8_t next_tag = cf[2] >> 5;
-    if (dup_tag != first_tag || next_tag != ((first_tag + 1) & 7))
-    { printf("  unit: FAIL duplicate tags %u %u %u\n", first_tag, dup_tag, next_tag); ++failures; }
+    trade_shim_child(cf, 16, 101, reply, sizeof(reply), &fdup);
+    child_command_frame(b, 0, CMD_BLOCK | 3, 2);   /* an untagged resend */
+    trade_shim_child(b, 16, 102, reply, sizeof(reply), &fb);
+    trade_shim_stamp(a, 16);
+    trade_shim_stamp(b, 16);
+    uint8_t idle[16] = {0x0e, 0x10};
+    trade_shim_stamp(idle, 16);                     /* idle frames carry no tag */
+    if (!fa || fdup || !fb || (a[2] >> 5) != 0 || (b[2] >> 5) != 1 || (b[2] & 0x1f) != 3 || idle[2] != 0)
+    { printf("  unit: FAIL duplicate/stamp fa=%d fdup=%d fb=%d tags %u %u\n", fa, fdup, fb, a[2] >> 5, b[2] >> 5); ++failures; }
 
     printf("  unit checks: %s\n", failures ? "FAILED" : "ok");
     return failures;
@@ -473,6 +489,9 @@ int main(int argc, char **argv)
     failures += run("shim, duplicated frames", (scenario_t){.shim = true, .save_ms = 6500, .duplicate_every = 5}, verbose);
     printf("with shim, duplicated frames and a busy child together:\n");
     failures += run("shim, duplicates + busy", (scenario_t){.shim = true, .save_ms = 6500, .duplicate_every = 3, .child_busy_ms = 150}, verbose);
+    printf("with shim, the bridge's queue loses a child command before sending it (the parent's tag check must not trip):\n");
+    failures += run("shim, queue drop", (scenario_t){.shim = true, .save_ms = 6500, .drop_queued_command = 120}, verbose);
+    failures += run("shim, queue drop 2", (scenario_t){.shim = true, .save_ms = 6500, .drop_queued_command = 250}, verbose);
     printf("unit checks:\n");
     failures += unit_request_repeat();
     printf(failures ? "FAILED\n" : "PASS\n");

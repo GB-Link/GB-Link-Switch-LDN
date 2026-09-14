@@ -6,6 +6,10 @@
 
 #define PIA_MAX_DATAGRAM 1472
 #define PIA_MAX_BODY 2048
+/* A decompressed datagram body. The Switch re-sends every reliable frame its partner
+   has not acknowledged in one datagram: in a captured session those batches grew to
+   74 messages and 7.2 KB, from 381 bytes on the wire, and stopped there. */
+#define PIA_MAX_INFLATE 12288
 #define PIA_MAX_MESSAGES 16
 
 typedef struct
@@ -51,9 +55,15 @@ int pia_encrypt(const pia_crypto_t *c, const uint8_t *body, size_t body_len, con
 bool pia_crypto_prepare(void);
 size_t pia_crypto_dctx_size(void);
 
+/* Returns the decompressed length; -1 when the context is missing or a plain body does
+   not fit; -(1000 + ZSTD_ErrorCode) when zstd rejects the frame (1070 = output too small). */
 int pia_decompress(const uint8_t *in, size_t len, uint8_t *out, size_t out_cap);
 int pia_compress_raw(const uint8_t *in, size_t len, uint8_t *out, size_t out_cap);
 
 /* Message list encoding: [bits][flags?][size:2][protocol][payload]. */
 int pia_message_encode(const pia_message_t *m, uint8_t *out, size_t out_cap);
 int pia_messages_decode(const uint8_t *data, size_t len, pia_message_t *out, int max);
+/* The same decoding one message at a time, with no limit on how many a body holds. */
+typedef struct { const uint8_t *data; size_t len, pos; int size, proto; uint8_t flags; } pia_message_iter_t;
+void pia_message_iter_init(pia_message_iter_t *it, const uint8_t *data, size_t len);
+bool pia_message_next(pia_message_iter_t *it, pia_message_t *out);

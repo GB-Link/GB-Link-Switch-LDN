@@ -111,6 +111,7 @@ static int nibble(char c)
 }
 
 static void emit_line(const char *line) { printf("%s\n", line); }
+static bool s_dumping_log;
 
 static void command(const char *line)
 {
@@ -170,7 +171,7 @@ static void command(const char *line)
     if (!strcmp(line, "LDN_KEYS_ERASE")) { ldn_keys_erase(); printf("LDN_KEYS_ERASED\n"); return; }
     if (!strcmp(line, "LDN_BRIDGE_START")) { pia_bridge_start(); printf("LDN_BRIDGE_STARTED\n"); return; }
     if (!strcmp(line, "LDN_BRIDGE_STOP")) { pia_bridge_stop(); printf("LDN_BRIDGE_STOPPED\n"); return; }
-    if (!strcmp(line, "LDN_SHIM_LOG")) { trade_shim_dump(emit_line); return; }
+    if (!strcmp(line, "LDN_SHIM_LOG")) { trade_shim_dump_begin(); s_dumping_log = true; return; }
     if (!strcmp(line, "LDN_BRIDGE_STATUS")) {
         static char report[384];
         pia_bridge_status(report, sizeof(report));
@@ -290,6 +291,9 @@ void ldn_control_set_action_handler(void (*handler)(const uint8_t source[6], con
 
 void ldn_control_poll(void)
 {
+    /* A few lines per pass: printing hundreds at once holds this loop, and the bridge
+       with it, for as long as the console takes to drain. */
+    if (s_dumping_log && !trade_shim_dump_step(emit_line, 8)) s_dumping_log = false;
     /* Hand queued adapter frames to the host from THIS task: the wire layer
        serialises through static buffers and the adapter runs on another core. */
     if (ldn_wire_active() && !pia_bridge_running()) {
