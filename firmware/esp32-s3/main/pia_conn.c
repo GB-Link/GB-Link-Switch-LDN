@@ -64,20 +64,42 @@ static int build_join(const pia_conn_t *c, uint8_t *out, size_t cap)
     return (int)o;
 }
 
+/* A net protocol acknowledgement: the request's type plus one and its sequence id, sent
+   the way the host sends its own net messages (packet id 0). */
+static void net_ack(pia_conn_t *c, uint8_t type, const uint8_t *sequence, uint16_t src)
+{
+    uint8_t reply[8] = {0x01, type, 0x00, 0x00, sequence[0], sequence[1], sequence[2], sequence[3]};
+    pia_outbox_t *o = outbox_add(c, 1, reply, sizeof(reply), 0, src);
+    if (o) { o->footer = false; o->establishing = true; o->packet = 0; }
+}
+
 void pia_conn_feed(pia_conn_t *c, const pia_message_t *m, int tick)
 {
     const uint8_t *p = m->payload;
-    if (m->protocol == 1 && m->length >= 4)
+    if (m->protocol == 1 && m->length >= 8)
     {
-        if (p[1] == 0x11 && c->state == 0 && m->length >= 16)
+        /* Net protocol (Pia 6.3x): the host repeats a network status update (0x11), a
+           network property update (0x50) or a keep-alive (0x80) every 500 ms until every
+           station acknowledges it with type + 1 and the same sequence id. A property update
+           left unacknowledged is retried for about ten minutes, then the host stops taking
+           this station's traffic -- the session freezes mid-trade. */
+        const uint8_t type = p[1];
+        const bool request = type == 0x11 || type == 0x50 || type == 0x80;
+        if (request)
+        {
+            const uint32_t sequence = bin_b32(p + 4);
+            if (type == c->net_last_type && sequence == c->net_last_seq) ++c->net_repeats;
+            else { c->net_last_type = type; c->net_last_seq = sequence; c->net_repeats = 0; }
+            ++c->net_requests;
+        }
+        if (type == 0x11 && c->state == 0 && m->length >= 16)
         {
             memcpy(c->remote_mac, p + 10, 6);
             if (c->host_id == 0) c->host_id = bin_b16(p + 8);
 
-            uint8_t reply[8] = {0x01, 0x12, 0x00, 0x00, 0, 0, 0, 0};
-            memcpy(reply + 4, p + 4, 4);
-            pia_outbox_t *o = outbox_add(c, 1, reply, sizeof(reply), 0, 0);
-            if (o) { o->footer = false; o->establishing = true; o->packet = 0; }
+            /* This first acknowledgement, source id 0 and packet id 0, is the one the host
+               has always taken. */
+            net_ack(c, 0x12, p + 4, 0);
 
             uint8_t join[PIA_OUTBOX_PAYLOAD];
             int n = build_join(c, join, sizeof(join));
@@ -87,12 +109,14 @@ void pia_conn_feed(pia_conn_t *c, const pia_message_t *m, int tick)
                 if (j) { j->compress = true; j->footer = false; j->establishing = true; j->packet = 0; }
             }
         }
-        else if (p[1] == 0x50 && m->length >= 8)
+        else if (request)
         {
-            uint8_t reply[8] = {0x01, 0x51, 0x00, 0x00, 0, 0, 0, 0};
-            memcpy(reply + 4, p + 4, 4);
-            pia_outbox_t *o = outbox_add(c, 1, reply, sizeof(reply), 0, c->our_id);
-            if (o) { o->footer = false; o->establishing = true; }
+            /* The property update acknowledgement used to go out with our station id and a
+               running packet id, and the host never took one. Send the form it takes (source
+               0, packet 0) and the form it uses itself (our id, packet 0); a second copy of
+               an acknowledgement is harmless. */
+            net_ack(c, (uint8_t)(type + 1), p + 4, 0);
+            net_ack(c, (uint8_t)(type + 1), p + 4, c->our_id);
         }
     }
     else if (m->protocol == 13 && m->length > 0)
