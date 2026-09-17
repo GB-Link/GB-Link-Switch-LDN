@@ -1,0 +1,13 @@
+# Target labels
+ bootloader
+# Source files and their labels
+/home/starlark/github/frlg-ldn-trade-esp32/firmware/esp32-c6-bridge/build/CMakeFiles/bootloader
+/home/starlark/github/frlg-ldn-trade-esp32/firmware/esp32-c6-bridge/build/CMakeFiles/bootloader.rule
+/home/starlark/github/frlg-ldn-trade-esp32/firmware/esp32-c6-bridge/build/CMakeFiles/bootloader-complete.rule
+/home/starlark/github/frlg-ldn-trade-esp32/firmware/esp32-c6-bridge/build/bootloader-prefix/src/bootloader-stamp/bootloader-build.rule
+/home/starlark/github/frlg-ldn-trade-esp32/firmware/esp32-c6-bridge/build/bootloader-prefix/src/bootloader-stamp/bootloader-configure.rule
+/home/starlark/github/frlg-ldn-trade-esp32/firmware/esp32-c6-bridge/build/bootloader-prefix/src/bootloader-stamp/bootloader-download.rule
+/home/starlark/github/frlg-ldn-trade-esp32/firmware/esp32-c6-bridge/build/bootloader-prefix/src/bootloader-stamp/bootloader-install.rule
+/home/starlark/github/frlg-ldn-trade-esp32/firmware/esp32-c6-bridge/build/bootloader-prefix/src/bootloader-stamp/bootloader-mkdir.rule
+/home/starlark/github/frlg-ldn-trade-esp32/firmware/esp32-c6-bridge/build/bootloader-prefix/src/bootloader-stamp/bootloader-patch.rule
+/home/starlark/github/frlg-ldn-trade-esp32/firmware/esp32-c6-bridge/build/bootloader-prefix/src/bootloader-stamp/bootloader-update.rule

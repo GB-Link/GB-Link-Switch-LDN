@@ -6,5 +6,6 @@ execute_process(COMMAND "${GIT_EXECUTABLE}" -C "$ENV{IDF_PATH}" rev-parse HEAD
 if(NOT sdk_result EQUAL 0 OR NOT sdk_revision STREQUAL "fff9895c82d744c7237be8847347bdd1b07c6643")
     message(FATAL_ERROR "S3 private WPA interface requires pinned ESP-IDF v6.1")
 endif()
+set(EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_LIST_DIR}/../bridge-common/components")
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(ldn_s3_bridge)

@@ -3,7 +3,7 @@
 This specification defines the protocol between the C# host and the wireless bridge device. The device
 model plays no part in compatibility decisions. The version 1 reference implementations are in
 `firmware/esp32-c6/main/` and `firmware/esp32-c3/main/` (`ldn_wire.c`, `ldn_control.c`, `ldn_udp.c`), with
-the `firmware/esp32-s3/main/` and `firmware/esp32/main/` ports derived from the C3 implementation;
+the `firmware/bridge-common/` sources shared by the S3 and C6 bridges and the `firmware/esp32/main/` port, all derived from the C3 implementation;
 the host implementation is in `host/core/SerialProtocol.cs` and `host/core/TradeSession.cs`.
 Paths in this document are relative to the repository root.
 

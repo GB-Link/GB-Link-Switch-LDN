@@ -1,0 +1,2 @@
+-march=rv32imac_zicsr_zifencei_zaamo_zalrsc
+"-specs=/home/starlark/github/frlg-ldn-trade-esp32/firmware/esp32-c6-bridge/build/specs/picolibc.specs"

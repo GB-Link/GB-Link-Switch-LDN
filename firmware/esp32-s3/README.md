@@ -9,12 +9,12 @@ Developed on an M5Stack AtomS3 (ESP32-S3, 8 MB embedded flash, USB-C on the nati
 
 The source is the C3 firmware with the target changed:
 
-- `main/s3_transport.c` is the C3 USB Serial/JTAG transport; the S3 has the same peripheral and driver.
-- `main/ldn_probe.c` keeps the C3 join sequence: private WPA callback table, pre-derived CCMP key install,
+- `../bridge-common/usb_transport.c` is the C3 USB Serial/JTAG transport; the S3 has the same peripheral and driver.
+- `../bridge-common/ldn_probe.c` keeps the C3 join sequence: private WPA callback table, pre-derived CCMP key install,
   then `esp_wifi_auth_done_internal()`. Key readback is diagnostic only on the S3: the pinned driver accepts
   both keys but its pairwise getter is unsupported and its group getter answers without the key, so the port is
   authorized once both installs succeed and the encrypted LDN authentication exchange verifies the keys
-  (`LDN_KEY_STATUS` reports the install and readback results). The private ABI in `main/ldn_private_wifi.h`
+  (`LDN_KEY_STATUS` reports the install and readback results). The private ABI in `../bridge-common/ldn_private_wifi.h`
   is the ESP-IDF v6.1 supplicant interface and is shared by all chips in that release, but the closed
   S3 driver has not been audited the way the C6 and C3 drivers were.
 - `main/CMakeLists.txt` pins the SHA-256 of the v6.1 `esp32s3/libnet80211.a` this port was built against.

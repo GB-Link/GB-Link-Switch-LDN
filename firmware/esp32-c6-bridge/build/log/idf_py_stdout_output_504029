@@ -1,0 +1,33 @@
+Command: ninja all
+[1/14] Performing build step for 'bootloader'
+[1/1] cd /home/starlark/github/frlg-ldn-trade-esp32/firmware/esp32-c6-bridge/build/bootloader && /home/starlark/.espressif/python_env/idf6.1_py3.14_env/bin/python /home/starlark/esp/esp-idf-v6.1/components/partition_table/check_sizes.py --offset 0x8000 bootloader 0x0 /home/starlark/github/frlg-ldn-trade-esp32/firmware/esp32-c6-bridge/build/bootloader/bootloader.bin
+Bootloader binary size 0x5670 bytes. 0x2990 bytes (32%) free.
+[2/14] No install step for 'bootloader'
+[3/14] Completed 'bootloader'
+[4/14] Building C object esp-idf/main/CMakeFiles/__idf_main.dir/home/starlark/github/frlg-ldn-trade-esp32/firmware/bridge-common/usb_transport.c.obj
+[5/14] Building C object esp-idf/main/CMakeFiles/__idf_main.dir/home/starlark/github/frlg-ldn-trade-esp32/firmware/bridge-common/ldn_wire.c.obj
+[6/14] Building C object esp-idf/main/CMakeFiles/__idf_main.dir/home/starlark/github/frlg-ldn-trade-esp32/firmware/bridge-common/ldn_control.c.obj
+[7/14] Building C object esp-idf/main/CMakeFiles/__idf_main.dir/home/starlark/github/frlg-ldn-trade-esp32/firmware/bridge-common/pia_link.c.obj
+[8/14] Building C object esp-idf/main/CMakeFiles/__idf_main.dir/home/starlark/github/frlg-ldn-trade-esp32/firmware/bridge-common/pia_bridge.c.obj
+[9/14] Building C object esp-idf/main/CMakeFiles/__idf_main.dir/home/starlark/github/frlg-ldn-trade-esp32/firmware/bridge-common/trade_shim.c.obj
+[10/14] Linking C static library esp-idf/main/libmain.a
+[11/14] Generating esp-idf/esp_system/ld/sections.ld
+NOTE: /home/starlark/esp/esp-idf-v6.1/components/bt/host/nimble/Kconfig.in:1428:
+BT_NIMBLE_MESH_PROVISIONER: 'default 0' is not a valid bool value (only 'y' and 
+'n' are allowed). Value is treated as 'n'.
+NOTE: /home/starlark/esp/esp-idf-v6.1/components/fatfs/Kconfig:240: 
+FATFS_PRINT_LLI: 'default 0' is not a valid bool value (only 'y' and 'n' are 
+allowed). Value is treated as 'n'.
+NOTE: /home/starlark/esp/esp-idf-v6.1/components/fatfs/Kconfig:245: 
+FATFS_PRINT_FLOAT: 'default 0' is not a valid bool value (only 'y' and 'n' are 
+allowed). Value is treated as 'n'.
+Skipping linker fragment parsing, fragment files unchanged
+[12/14] Linking CXX executable ldn_c6_bridge.elf
+[13/14] Generating binary image from built executable
+esptool v5.4.0
+Creating ESP32-C6 image...
+Merged 3 ELF sections.
+Successfully created ESP32-C6 image.
+Generated /home/starlark/github/frlg-ldn-trade-esp32/firmware/esp32-c6-bridge/build/ldn_c6_bridge.bin
+[14/14] cd /home/starlark/github/frlg-ldn-trade-esp32/firmware/esp32-c6-bridge/build && /home/starlark/.espressif/python_env/idf6.1_py3.14_env/bin/python /home/starlark/esp/esp-idf-v6.1/components/partition_table/check_sizes.py --offset 0x8000 partition --type app /home/starlark/github/frlg-ldn-trade-esp32/firmware/esp32-c6-bridge/build/partition_table/partition-table.bin /home/starlark/github/frlg-ldn-trade-esp32/firmware/esp32-c6-bridge/build/ldn_c6_bridge.bin
+ldn_c6_bridge.bin binary size 0x10b1f0 bytes. Smallest app partition is 0x177000 bytes. 0x6be10 bytes (29%) free.

@@ -1,0 +1,2 @@
+source /home/starlark/github/frlg-ldn-trade-esp32/firmware/esp32-c6-bridge/build/gdbinit/symbols
+source /home/starlark/github/frlg-ldn-trade-esp32/firmware/esp32-c6-bridge/build/gdbinit/connect
