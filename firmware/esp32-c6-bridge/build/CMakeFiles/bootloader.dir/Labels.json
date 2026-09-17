@@ -1,0 +1,43 @@
+{
+	"sources" : 
+	[
+		{
+			"file" : "/home/starlark/github/frlg-ldn-trade-esp32/firmware/esp32-c6-bridge/build/CMakeFiles/bootloader"
+		},
+		{
+			"file" : "/home/starlark/github/frlg-ldn-trade-esp32/firmware/esp32-c6-bridge/build/CMakeFiles/bootloader.rule"
+		},
+		{
+			"file" : "/home/starlark/github/frlg-ldn-trade-esp32/firmware/esp32-c6-bridge/build/CMakeFiles/bootloader-complete.rule"
+		},
+		{
+			"file" : "/home/starlark/github/frlg-ldn-trade-esp32/firmware/esp32-c6-bridge/build/bootloader-prefix/src/bootloader-stamp/bootloader-build.rule"
+		},
+		{
+			"file" : "/home/starlark/github/frlg-ldn-trade-esp32/firmware/esp32-c6-bridge/build/bootloader-prefix/src/bootloader-stamp/bootloader-configure.rule"
+		},
+		{
+			"file" : "/home/starlark/github/frlg-ldn-trade-esp32/firmware/esp32-c6-bridge/build/bootloader-prefix/src/bootloader-stamp/bootloader-download.rule"
+		},
+		{
+			"file" : "/home/starlark/github/frlg-ldn-trade-esp32/firmware/esp32-c6-bridge/build/bootloader-prefix/src/bootloader-stamp/bootloader-install.rule"
+		},
+		{
+			"file" : "/home/starlark/github/frlg-ldn-trade-esp32/firmware/esp32-c6-bridge/build/bootloader-prefix/src/bootloader-stamp/bootloader-mkdir.rule"
+		},
+		{
+			"file" : "/home/starlark/github/frlg-ldn-trade-esp32/firmware/esp32-c6-bridge/build/bootloader-prefix/src/bootloader-stamp/bootloader-patch.rule"
+		},
+		{
+			"file" : "/home/starlark/github/frlg-ldn-trade-esp32/firmware/esp32-c6-bridge/build/bootloader-prefix/src/bootloader-stamp/bootloader-update.rule"
+		}
+	],
+	"target" : 
+	{
+		"labels" : 
+		[
+			"bootloader"
+		],
+		"name" : "bootloader"
+	}
+}

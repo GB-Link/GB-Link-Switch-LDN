@@ -1,0 +1,20 @@
+Command: ninja all
+[1/10] Performing build step for 'bootloader'
+[1/1] cd /home/starlark/github/frlg-ldn-trade-esp32/firmware/esp32-c6-bridge/build/bootloader && /home/starlark/.espressif/python_env/idf6.1_py3.14_env/bin/python /home/starlark/esp/esp-idf-v6.1/components/partition_table/check_sizes.py --offset 0x8000 bootloader 0x0 /home/starlark/github/frlg-ldn-trade-esp32/firmware/esp32-c6-bridge/build/bootloader/bootloader.bin
+Bootloader binary size 0x5670 bytes. 0x2990 bytes (32%) free.
+[2/10] No install step for 'bootloader'
+[3/10] Completed 'bootloader'
+[4/10] Building C object esp-idf/main/CMakeFiles/__idf_main.dir/home/starlark/github/frlg-ldn-trade-esp32/firmware/bridge-common/pia_link.c.obj
+[5/10] Building C object esp-idf/main/CMakeFiles/__idf_main.dir/home/starlark/github/frlg-ldn-trade-esp32/firmware/bridge-common/pia_bridge.c.obj
+[6/10] Linking C static library esp-idf/main/libmain.a
+[7/10] Generating esp-idf/esp_system/ld/sections.ld
+Skipping linker script generation, section names unchanged
+[8/10] Linking CXX executable ldn_c6_bridge.elf
+[9/10] Generating binary image from built executable
+esptool v5.4.0
+Creating ESP32-C6 image...
+Merged 3 ELF sections.
+Successfully created ESP32-C6 image.
+Generated /home/starlark/github/frlg-ldn-trade-esp32/firmware/esp32-c6-bridge/build/ldn_c6_bridge.bin
+[10/10] cd /home/starlark/github/frlg-ldn-trade-esp32/firmware/esp32-c6-bridge/build && /home/starlark/.espressif/python_env/idf6.1_py3.14_env/bin/python /home/starlark/esp/esp-idf-v6.1/components/partition_table/check_sizes.py --offset 0x8000 partition --type app /home/starlark/github/frlg-ldn-trade-esp32/firmware/esp32-c6-bridge/build/partition_table/partition-table.bin /home/starlark/github/frlg-ldn-trade-esp32/firmware/esp32-c6-bridge/build/ldn_c6_bridge.bin
+ldn_c6_bridge.bin binary size 0x10b130 bytes. Smallest app partition is 0x177000 bytes. 0x6bed0 bytes (29%) free.
