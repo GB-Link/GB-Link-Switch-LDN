@@ -19,8 +19,8 @@ shrinks to a single line. Everything else (installing again, erasing, a `.uf2` o
 own, connecting over serial, disconnecting) is under *More options*.
 
 Playing without a Game Boy Advance, with the computer standing in for the GBA, is not
-part of this page yet. The desktop and console hosts in `host/` still do that, with the
-firmware in `firmware/old/`.
+part of this page yet. The desktop and console hosts in `host/` do that, on the same
+firmware.
 
 ## Running it
 

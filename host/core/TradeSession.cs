@@ -5,6 +5,11 @@ namespace Frlg.Trade.Core;
 
 public sealed class TradeSession(Action<object> emit)
 {
+    // Set from the UI thread; the engine is only touched on the session thread.
+    private volatile bool declineRequested;
+    private int offerRequested = -1;
+    public void DeclineTrade() => declineRequested = true;
+    public void OfferSlot(int slot) => Interlocked.Exchange(ref offerRequested, slot);
     public const ulong FireRedId = 0x01006fa0233f8000;
     private void Phase(string message) => emit(new { @event = "phase", message });
     private void Log(string message) => emit(new { @event = "log", message });
@@ -17,11 +22,14 @@ public sealed class TradeSession(Action<object> emit)
         using var log = new StreamWriter(Path.Combine(runPath, "native.log")) { AutoFlush = true };
         void Record(string text) { log.WriteLine($"{DateTimeOffset.Now:O} {text}"); Log(text); }
         engine.Log += Record;
+        engine.Notice += Phase;
+        engine.DecliningChanged += value => emit(new { @event = "declining", value });
         engine.OpponentParty += (values, name) => emit(new { @event = "opponent_party", name, party = values.Select(v => v == null ? null : Convert.ToHexString(v)).ToArray() });
         engine.Committed += (data, slot) =>
         {
             // Save at commit, before UI notification or the room-exit handshake.
-            string temp = Path.Combine(runPath, "received.pk3.tmp"), target = Path.Combine(runPath, "received.pk3");
+            string name = engine.Commits == 1 ? "received.pk3" : $"received-{engine.Commits}.pk3";
+            string temp = Path.Combine(runPath, name + ".tmp"), target = Path.Combine(runPath, name);
             File.WriteAllBytes(temp, data); File.Move(temp, target, true);
             emit(new { @event = "received", slot, pk3 = Convert.ToHexString(data) }); Record($"Trade committed; received {TradeEngine.Parse(data).Nickname}");
         };
@@ -30,8 +38,8 @@ public sealed class TradeSession(Action<object> emit)
         bool started = false;
         try
         {
-            device.Handshake(); started = true; Record($"Protocol v1 device: {device.Model}");
-            emit(new { @event = "device", model = device.Model });
+            device.Handshake(); started = true; Record($"Bridge firmware {device.Firmware} on {device.Model}");
+            emit(new { @event = "device", model = device.Model, firmware = device.Firmware });
             Phase("Searching for a Leader room");
             var network = LdnJoiner.Scan(device, keys, 25, cancel) ?? throw new ConnectionException("No joinable FireRed Leader room found; make sure the host is still waiting.");
             Record($"Room verified: protocol={network.Protocol} version={network.Version} channel={network.Channel}");
@@ -51,6 +59,8 @@ public sealed class TradeSession(Action<object> emit)
             while (!simulator.HostDisconnected)
             {
                 cancel.ThrowIfCancellationRequested(); double now = clock.Elapsed.TotalSeconds;
+                if (declineRequested) { declineRequested = false; engine.Decline(); }
+                if (Interlocked.Exchange(ref offerRequested, -1) is >= 0 and var wanted) engine.Offer(wanted);
                 if (now >= nextPing) { device.Command("LDN_PING", 5); nextPing = now + 1; }
                 var frames = device.Drain();
                 // The reason arrives in the same batch as LINK 0; keep it in the log before failing.
@@ -76,7 +86,7 @@ public sealed class TradeSession(Action<object> emit)
                 }
                 if (now >= nextTick) { simulator.Tick(); nextTick = now + 1 / 59.727; }
                 if (engine.Barrier.Mode == 2 && !closeSeen) { closeSeen = true; closeAt = now + 1.5; }
-                if (engine.Done && !doneSeen) { doneSeen = true; leaveAt = now + 120; Phase("Trade finished, waiting for the Leader to leave the room"); }
+                if (engine.Done && !doneSeen) { doneSeen = true; leaveAt = now + 120; Phase((engine.Commits == 0 ? "Trade cancelled" : "Trade finished") + ", waiting for the Leader to leave the room"); }
                 if (now >= closeAt || now >= leaveAt) break;
                 if (now - lastReceive > 30) throw new ConnectionException("Host communication timed out; the connection was closed.");
                 Thread.Sleep(1);

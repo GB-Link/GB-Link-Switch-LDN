@@ -1,0 +1,88 @@
+<Window x:Class="Frlg.Trade.Desktop.MainWindow"
+ xmlns="https://github.com/avaloniaui"
+ xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+ xmlns:local="using:Frlg.Trade.Desktop"
+ x:DataType="local:MainWindow"
+ Title="FRLG Trade Center" Icon="/Assets/icon.png" Width="1120" Height="810" MinWidth="900" MinHeight="700"
+ Background="#087D8C" Foreground="White" WindowStartupLocation="CenterScreen">
+ <Window.Resources>
+  <DataTemplate x:Key="PokemonTile" x:DataType="local:PokemonSlot">
+   <Border BorderBrush="{Binding Outline}" BorderThickness="2" CornerRadius="6" Margin="7" Padding="10"
+    Background="#235BB4" ToolTip.Tip="{Binding Details}" DragDrop.AllowDrop="True" PointerReleased="Slot_Click" Tag="{Binding}">
+    <Border.ContextMenu><ContextMenu>
+     <MenuItem Header="Import PK3…" Click="Import_Click" IsEnabled="{Binding !IsOpponent}"/>
+     <MenuItem Header="Export PK3…" Click="Export_Click" IsEnabled="{Binding Occupied}"/>
+     <MenuItem Header="Details" Click="Details_Click" IsEnabled="{Binding Occupied}"/>
+     <Separator/><MenuItem Header="Clear slot" Click="Clear_Click" IsEnabled="{Binding CanClear}"/>
+    </ContextMenu></Border.ContextMenu>
+    <Grid RowDefinitions="*,30">
+     <Grid ColumnDefinitions="*,76">
+      <Image Source="{Binding Sprite}" Stretch="Uniform" MaxHeight="88" Margin="4,2,8,4" RenderOptions.BitmapInterpolationMode="None"/>
+      <StackPanel Grid.Column="1" VerticalAlignment="Center" HorizontalAlignment="Right">
+       <TextBlock Text="{Binding Gender}" Foreground="{Binding GenderBrush}" FontSize="21" HorizontalAlignment="Right"/>
+       <TextBlock Text="{Binding Level}" FontSize="16" FontWeight="SemiBold" HorizontalAlignment="Right"/>
+      </StackPanel>
+     </Grid>
+     <Border Grid.Row="1" Background="#4981CF" CornerRadius="3" IsVisible="{Binding Occupied}">
+      <Viewbox StretchDirection="DownOnly" Margin="4,3"><TextBlock Text="{Binding Nickname}" FontSize="19" FontWeight="SemiBold"/></Viewbox>
+     </Border>
+    </Grid>
+   </Border>
+  </DataTemplate>
+ </Window.Resources>
+ <Grid x:Name="Root" Background="#087D8C">
+ <Grid Margin="24,18,24,20" RowDefinitions="52,48,*,66,54">
+  <Grid ColumnDefinitions="*,Auto">
+   <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+    <TextBlock Text="FRLG" FontSize="25" FontWeight="Bold"/>
+    <TextBlock Text="Trade Center" FontSize="18" Margin="13,5,0,0" Foreground="#CDF5EE"/>
+   </StackPanel>
+   <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+    <TextBlock x:Name="DeviceLabel" Text="Serial port" VerticalAlignment="Center" Margin="0,0,12,0" FontSize="13"/>
+    <ComboBox x:Name="PortBox" Width="190" SelectionChanged="Port_Changed"/>
+    <Button x:Name="RefreshPorts" Classes="quiet" Margin="6,0,0,0" Content="Refresh" Click="Refresh_Click" ToolTip.Tip="Look for serial ports again"/>
+   </StackPanel>
+  </Grid>
+  <Grid Grid.Row="1" ColumnDefinitions="Auto,Auto,*">
+   <CheckBox x:Name="AutoOt" Content="Auto-sync partner's trainer" VerticalAlignment="Center" Foreground="White" FontSize="14"
+    IsCheckedChanged="AutoOt_Changed" Margin="0,0,12,0"/>
+   <Button x:Name="SyncOt" Grid.Column="1" Classes="quiet" VerticalAlignment="Center" IsEnabled="False" Content="Sync now" Click="SyncOt_Click"
+    ToolTip.Tip="Give the standby party the partner's trainer now"/>
+   <TextBlock x:Name="OtStatus" Grid.Column="2" Text="" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" HorizontalAlignment="Right" FontSize="12" Foreground="#C9F6EE" Margin="10,0,0,0"/>
+  </Grid>
+  <Grid Grid.Row="2" ColumnDefinitions="*,20,*">
+   <Grid Background="#174C9D" RowDefinitions="54,*">
+    <Border Background="#F7C842" Margin="8,0,8,0" CornerRadius="4">
+     <TextBlock x:Name="OpponentName" Text="Partner" Foreground="#243A50" FontSize="24" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+    </Border>
+    <ItemsControl x:Name="OpponentGrid" Grid.Row="1" ItemsSource="{Binding OpponentSlots}" ItemTemplate="{StaticResource PokemonTile}" Margin="1,8,1,1">
+     <ItemsControl.ItemsPanel><ItemsPanelTemplate><UniformGrid Rows="3" Columns="2"/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+    </ItemsControl>
+   </Grid>
+   <Grid Grid.Column="2" Background="#174C9D" RowDefinitions="54,*">
+    <Border Background="#F7C842" Margin="8,0,8,0" CornerRadius="4">
+     <TextBlock Text="EMU" Foreground="#243A50" FontSize="24" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+    </Border>
+    <ItemsControl x:Name="LocalGrid" Grid.Row="1" ItemsSource="{Binding LocalParty.Slots}" ItemTemplate="{StaticResource PokemonTile}" Margin="1,8,1,1">
+     <ItemsControl.ItemsPanel><ItemsPanelTemplate><UniformGrid Rows="3" Columns="2"/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+    </ItemsControl>
+   </Grid>
+  </Grid>
+  <Grid Grid.Row="3" Margin="2,11,2,5" ColumnDefinitions="*,Auto">
+   <StackPanel>
+    <TextBlock x:Name="StatusText" Text="Not connected" FontSize="15" TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding $self.Text}"/>
+    <TextBlock x:Name="PendingText" Text="" Foreground="#FFE694" FontSize="12" Margin="0,4,0,0"/>
+   </StackPanel>
+   <Button Grid.Column="1" Padding="10,7" Background="Transparent" Foreground="#D0F2F2" Content="Logs" Click="OpenLogs_Click" ToolTip.Tip="Open this session's logs"/>
+  </Grid>
+  <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Center">
+   <Button x:Name="ConnectButton" Width="148" Margin="0,5,12,0" Content="Connect" Click="Connect_Click"/>
+   <Button x:Name="CancelTradeButton" Width="148" Margin="0,5,12,0" Background="#D4EBE7" IsEnabled="False" Content="Cancel trade" Click="CancelTrade_Click"
+    ToolTip.Tip="Back out of the trade menu without trading. Choose CANCEL on the Switch as well."/>
+   <Button x:Name="DisconnectButton" Width="148" Margin="0,5,0,0" Background="#D4EBE7" IsEnabled="False" Click="Disconnect_Click">
+    <TextBlock x:Name="DisconnectLabel" Text="Disconnect"/>
+   </Button>
+  </StackPanel>
+ </Grid>
+ </Grid>
+</Window>

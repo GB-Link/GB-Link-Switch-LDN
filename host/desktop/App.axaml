@@ -1,0 +1,24 @@
+<Application x:Class="Frlg.Trade.Desktop.App"
+ xmlns="https://github.com/avaloniaui"
+ xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+ RequestedThemeVariant="Light">
+ <Application.Styles>
+  <FluentTheme/>
+  <Style Selector="Button">
+   <Setter Property="Padding" Value="18,10"/><Setter Property="FontSize" Value="14"/>
+   <Setter Property="Background" Value="#F7C842"/><Setter Property="Foreground" Value="#19323B"/>
+   <Setter Property="BorderThickness" Value="0"/><Setter Property="Cursor" Value="Hand"/>
+   <Setter Property="Template"><ControlTemplate>
+    <Border Background="{TemplateBinding Background}" CornerRadius="5" Padding="{TemplateBinding Padding}">
+     <ContentPresenter Content="{TemplateBinding Content}" ContentTemplate="{TemplateBinding ContentTemplate}"
+      Foreground="{TemplateBinding Foreground}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+    </Border>
+   </ControlTemplate></Setter>
+  </Style>
+  <Style Selector="Button:pointerover"><Setter Property="Opacity" Value="0.85"/></Style>
+  <Style Selector="Button:disabled"><Setter Property="Opacity" Value="0.35"/><Setter Property="Cursor" Value="Arrow"/></Style>
+  <Style Selector="Button.quiet"><Setter Property="Background" Value="#C5EAE6"/><Setter Property="Padding" Value="11,7"/><Setter Property="FontSize" Value="13"/></Style>
+  <Style Selector="ComboBox"><Setter Property="FontSize" Value="14"/><Setter Property="MinHeight" Value="32"/>
+   <Setter Property="Background" Value="White"/><Setter Property="Foreground" Value="#19323B"/></Style>
+ </Application.Styles>
+</Application>

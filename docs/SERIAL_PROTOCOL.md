@@ -248,6 +248,20 @@ play the GBA. The setting is not kept across a restart, and the firmware restart
 itself when a session ends, so a client re-establishes binary mode and the port after
 the device comes back.
 
+The bridge starts with the board and owns the radio while it runs: `LDN_SCAN`,
+`LDN_CONFIG` and `LDN_STOP` then answer `LDN_ERROR BRIDGE_OWNS_RADIO`. A host that runs
+the session itself, as in version 1, sends `LDN_BRIDGE_STOP` after `LDN_BEGIN` (the
+bridge leaves any room it is in and the radio is the host's), and `LDN_BRIDGE_START`
+after its final `LDN_STOP`, so the board carries on as it does on its own.
+`host/core/SerialProtocol.cs` does this, and refuses firmware that does not answer
+`LDN_INFO` with version 2.0 or later.
+
+A UART console runs at 921600 baud from its first line (what a chip's ROM prints
+before that is at 115200), so a host opens the port at that rate and `LDN_BAUD` is not
+needed; a chip's own USB port ignores the rate. Opening the port resets the chip on
+some systems, so a host repeats `LDN_BINARY` and `LDN_HELLO` until the firmware has
+started.
+
 Other additions: `LDN_INFO` reports `LDN_INFO frlg-ldn-bridge <version> chip=<target>
 transport=<name>` with no side effects, which text `LDN_HELLO` does not (it switches
 the console to binary mode); `LDN_RF` reports the signal strength of the room's
