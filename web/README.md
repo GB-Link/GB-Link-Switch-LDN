@@ -142,6 +142,7 @@ The offsets come from each build's `flasher_args.json`.
 | `js/keys.js` | picking the four values out of `prod.keys` |
 | `js/manifest.js` | the bundled firmware list |
 | `js/app.js` | the page: each card is drawn from one view of its state (status line, hint, one button) |
+| `js/launcher-return.js` | the "Launcher" button shown when the page is opened from the [GB-Link launcher](https://launcher.gblink.io) (`?from=gblink-launcher`); the same file the other GB-Link web clients carry |
 
 `firmware/tools/host_bridge.py` does the same relay from a terminal and is the reference
 the JavaScript was checked against. `node web/tests/run.mjs` tests the protocol code

@@ -196,3 +196,7 @@ footer p { color: var(--muted); font-size: 0.82rem; }
     .card { padding: 16px; }
     .masthead { padding-top: 26px; }
 }
+
+@media (max-width: 1000px) {
+    body:has(#gblink-launcher-return) .masthead { padding-top: 56px; }
+}
