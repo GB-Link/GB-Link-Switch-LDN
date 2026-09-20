@@ -1,10 +1,11 @@
-using System.IO;
+using System.Runtime.InteropServices;
 using System.Text.Json;
-using System.Windows;
-using System.Windows.Controls;
-using System.Windows.Media;
-using System.Windows.Media.Imaging;
-using System.Windows.Threading;
+using Avalonia;
+using Avalonia.Controls;
+using Avalonia.Headless;
+using Avalonia.Input;
+using Avalonia.Media.Imaging;
+using Avalonia.Threading;
 
 namespace Frlg.Trade.Desktop;
 
@@ -26,22 +27,29 @@ public static class SmokeTests
         Directory.CreateDirectory(output);
         try
         {
-            for (int i = 0; i < 6; i++) window.LocalParty.Slots[i].Set(null);
-            window.LocalParty.Slots[0].Set(PokemonData.Parse(DefaultAssets.Party("mewtwo")));
-            window.LocalParty.Slots[1].Set(PokemonData.Parse(DefaultAssets.Party("deoxys")));
+            // The first two built-in Pokémon go to slots 0 and 1, which the clicks below target.
+            window.LocalParty.LoadDefault();
+            var builtIn = window.LocalParty.Slots.Where(s => s.Occupied).Select(s => s.Pokemon!).ToArray();
+            Require(builtIn.Length >= 2 && window.LocalParty.Slots[window.LocalParty.Selected].Occupied, "Built-in party can start a trade");
+            for (int i = 0; i < 6; i++) window.LocalParty.Slots[i].Set(i < 2 ? builtIn[i] : null);
             for (int spriteId = 1; spriteId <= 386; spriteId++)
             {
                 using var sprite = DefaultAssets.Open($"sprites.{spriteId}.png");
-                Require(BitmapFrame.Create(sprite, BitmapCreateOptions.None, BitmapCacheOption.OnLoad).PixelWidth > 0,
-                    $"Embedded sprite {spriteId} decodes");
+                using var decoded = new Bitmap(sprite);
+                Require(decoded.PixelSize.Width > 0, $"Embedded sprite {spriteId} decodes");
             }
             window.LocalParty.Select(1);
             Require(window.OpponentSlots.All(s => !s.Occupied), "Disconnected opponents must be blank");
-            Require(window.ConnectButton.IsEnabled && !window.DisconnectButton.IsEnabled, "Initial button state");
-            Require(window.LocalParty.Slots[0].Pokemon?.Species == 150, "Default Mewtwo");
-            Require(window.LocalParty.Slots[1].Pokemon?.Species == 386, "Internal Deoxys ID must become national ID 386");
+            Require(window.ConnectButton.IsEnabled && !window.DisconnectButton.IsEnabled && !window.CancelTradeButton.IsEnabled, "Initial button state");
             Require(window.LocalParty.Slots.Take(2).All(s => s.Sprite != null), "Default sprites");
             await Capture(window, output, "disconnected");
+
+            await Click(window, window.LocalGrid, 0);
+            Require(window.LocalParty.Selected == 0, "Click selects the offered slot");
+            await Click(window, window.OpponentGrid, 3);
+            Require(window.LocalParty.Selected == 0, "Click on the partner side changes nothing");
+            await Click(window, window.LocalGrid, 1);
+            Require(window.LocalParty.Selected == 1, "Click selects another slot");
 
             var pk = window.LocalParty.Slots[0].Pokemon!;
             var trainer = new TrainerIdentity(12345, 54321, "ALICE", 1);
@@ -71,11 +79,30 @@ public static class SmokeTests
             using (var doc = JsonDocument.Parse(JsonSerializer.Serialize(new { @event = "opponent_party", name = "ezwd", party })))
                 window.HandleEvent(doc.RootElement);
             Require(window.OpponentSlots.All(s => s.Occupied && s.Sprite != null), "Live event fills all six sprites");
+            Require(window.CancelTradeButton.IsEnabled, "Cancel trade enabled in the trade menu");
+            using (var yes = JsonDocument.Parse("{\"event\":\"declining\",\"value\":true}")) window.HandleEvent(yes.RootElement);
+            Require(!window.CancelTradeButton.IsEnabled, "Cancel trade disabled while declining");
+            using (var no = JsonDocument.Parse("{\"event\":\"declining\",\"value\":false}")) window.HandleEvent(no.RootElement);
+            Require(window.CancelTradeButton.IsEnabled, "Cancel trade enabled again after the offer returns");
+
+            window.BeginSession(window.LocalParty.Snapshot());
+            await Click(window, window.LocalGrid, 0);
+            Require(window.LastLiveOffer == 0 && !window.PendingChanges && window.StatusText.Text!.Contains(window.LocalParty.Slots[0].Nickname), "Click while connected sends a live offer");
+            await Click(window, window.LocalGrid, 1);
+            Require(window.LastLiveOffer == 1 && window.LocalParty.Selected == 1, "Second live offer");
+            var arrival = pk.Clone(); arrival.Species = 19; arrival.Nickname = "RATTATA"; arrival.RefreshChecksum();
+            using (var got = JsonDocument.Parse(JsonSerializer.Serialize(new { @event = "received", slot = 1, pk3 = Convert.ToHexString(PokemonData.Export(arrival)) })))
+                window.HandleEvent(got.RootElement);
+            Require(window.LocalParty.Slots[1].Nickname == "RATTATA" && window.LocalParty.Selected == 1, "Received Pokémon takes the traded slot and stays offered");
+            Require(!window.CancelTradeButton.IsEnabled, "Cancel trade disabled after a trade until the menu reopens");
+            await Click(window, window.LocalGrid, 0);
+            Require(window.LastLiveOffer == 0 && !window.PendingChanges, "Live offer after a trade");
+            await Click(window, window.LocalGrid, 1);
             Require(window.GetTrainers().Length == 2, "OT identity dedup includes SID");
             var snapshot = window.LocalParty.Snapshot();
             window.LocalParty.ApplyTrainer(trainer); window.MarkChanged();
             Require(PokemonData.Parse(Convert.FromHexString(snapshot[0]!)).OriginalTrainerName == pk.OriginalTrainerName, "Connected snapshot remains unchanged");
-            Require(window.PendingChanges && window.PendingText.Text.Contains("next connection"), "Connected edits staged");
+            Require(window.PendingChanges && window.PendingText.Text!.Contains("next connection"), "Connected edits staged");
             Require(window.LocalParty.Slots.Where(s => s.Occupied).All(s => TrainerIdentity.From(s.Pokemon!) == trainer), "OT updates every local occupied slot");
             await Capture(window, output, "connected");
             window.Width = 900; window.Height = 700;
@@ -84,20 +111,38 @@ public static class SmokeTests
             window.ImportFiles(window.LocalParty.Slots[5], [dropped]);
             Require(window.LocalParty.Slots[5].Occupied, "Import reaches sixth slot");
             window.SetState(ConnectionState.Disconnected);
-            Require(window.OpponentSlots.All(s => !s.Occupied) && window.ConnectButton.IsEnabled && !window.DisconnectButton.IsEnabled, "Unexpected exit resets party and buttons");
+            Require(window.OpponentSlots.All(s => !s.Occupied) && window.ConnectButton.IsEnabled && !window.DisconnectButton.IsEnabled && !window.CancelTradeButton.IsEnabled,
+                "Unexpected exit resets party and buttons");
             var client = new BridgeClient();
             var exited = new TaskCompletionSource<int>();
-            client.Exited += code => { window.HandleExit(code); exited.TrySetResult(code); };
+            client.Exited += code => Dispatcher.UIThread.Post(() => { window.HandleExit(code); exited.TrySetResult(code); });
             window.SetState(ConnectionState.Connecting);
             try
             {
                 // Invalid party exercises the native worker failure path before serial access.
-                await client.StartAsync("COM6", new string?[6], 0);
+                await client.StartAsync("none", new string?[6], 0);
                 Require(await exited.Task.WaitAsync(TimeSpan.FromSeconds(10)) != 0, "Backend failure is observed");
                 Require(window.State == ConnectionState.Disconnected && window.ConnectButton.IsEnabled && !window.DisconnectButton.IsEnabled,
                     "Real backend exit restores controls");
             }
             finally { await client.StopAsync(); }
+            // Made-up keys, imported into a folder of its own, never the program directory.
+            string keysFolder = Path.Combine(output, "keys-setup");
+            if (Directory.Exists(keysFolder)) Directory.Delete(keysFolder, true);
+            Directory.CreateDirectory(keysFolder);
+            string wholeFile = Path.Combine(output, "made-up.keys"), uselessFile = Path.Combine(output, "useless.keys");
+            File.WriteAllLines(wholeFile, Frlg.Trade.Core.KeyFile.Used.Select((name, i) => $"{name} = {new string((char)('1' + i), 32)}").Append("header_key = " + new string('f', 64)));
+            File.WriteAllText(uselessFile, "header_key = " + new string('f', 64) + "\n");
+            var setup = new KeysPrompt(keysFolder);
+            Require(!setup.TryImport(uselessFile) && setup.Problem!.Contains("cannot be used") && !File.Exists(Path.Combine(keysFolder, "prod.keys")), "Unusable key file is refused with a reason");
+            var dialog = setup.Build();
+            dialog.Show();
+            await Task.Delay(120);
+            await Dispatcher.UIThread.InvokeAsync(dialog.UpdateLayout, DispatcherPriority.Background);
+            Render((Control)dialog.Content!, Path.Combine(output, "keys-setup.png"));
+            dialog.Close();
+            Require(setup.TryImport(wholeFile) && !File.ReadAllText(Path.Combine(keysFolder, "prod.keys")).Contains("header_key"), "Key import keeps only the used entries");
+            Directory.Delete(keysFolder, true); File.Delete(wholeFile); File.Delete(uselessFile);
             window.AutoOt.IsChecked = auto;
             File.WriteAllText(Path.Combine(output, "result.json"), JsonSerializer.Serialize(new { checks, passed = true, pkhex = "26.8.26" }));
         }
@@ -109,31 +154,49 @@ public static class SmokeTests
             else File.WriteAllBytes(settingsFile, previousSettings);
         }
     }
+
+    private static async Task Click(MainWindow window, ItemsControl grid, int index)
+    {
+        var tile = grid.ContainerFromIndex(index) ?? throw new InvalidOperationException("A party tile is missing");
+        var point = tile.TranslatePoint(new Point(tile.Bounds.Width / 2, tile.Bounds.Height / 2), window)
+            ?? throw new InvalidOperationException("A party tile is outside the window");
+        window.MouseMove(point);
+        window.MouseDown(point, MouseButton.Left);
+        window.MouseUp(point, MouseButton.Left);
+        await Dispatcher.UIThread.InvokeAsync(() => { }, DispatcherPriority.Background);
+    }
+
     private static async Task Capture(MainWindow window, string directory, string name)
     {
-        await window.Dispatcher.InvokeAsync(() => { window.UpdateLayout(); }, DispatcherPriority.ApplicationIdle);
         await Task.Delay(120);
-        var root = (FrameworkElement)window.Content;
+        await Dispatcher.UIThread.InvokeAsync(window.UpdateLayout, DispatcherPriority.Background);
+        var root = window.Root;
         foreach (var grid in new[] { window.OpponentGrid, window.LocalGrid })
         {
             var bounds = new List<Rect>();
             for (int i = 0; i < 6; i++)
             {
-                var element = (FrameworkElement)grid.ItemContainerGenerator.ContainerFromIndex(i);
-                Require(element.ActualWidth > 100 && element.ActualHeight > 100, "Stable tile dimensions");
-                var rect = element.TransformToAncestor(root).TransformBounds(new Rect(element.RenderSize));
-                Require(bounds.All(other => !Rect.Intersect(other, rect).HasArea()), "Tiles do not overlap");
+                var element = grid.ContainerFromIndex(i) ?? throw new InvalidOperationException("A party tile is missing");
+                Require(element.Bounds.Width > 100 && element.Bounds.Height > 100, "Stable tile dimensions");
+                var origin = element.TranslatePoint(new Point(0, 0), root) ?? throw new InvalidOperationException("A party tile is outside the window");
+                var rect = new Rect(origin, element.Bounds.Size);
+                Require(bounds.All(other => !HasArea(other.Intersect(rect))), "Tiles do not overlap");
                 bounds.Add(rect);
             }
         }
-        var bitmap = new RenderTargetBitmap((int)(root.ActualWidth + root.Margin.Left + root.Margin.Right),
-            (int)(root.ActualHeight + root.Margin.Top + root.Margin.Bottom), 96, 96, PixelFormats.Pbgra32);
-        bitmap.Render(window);
-        byte[] pixels = new byte[bitmap.PixelWidth * bitmap.PixelHeight * 4];
-        bitmap.CopyPixels(pixels, bitmap.PixelWidth * 4, 0);
-        Require(pixels.Distinct().Count() > 100, "Rendered image contains content");
-        var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));
-        using var file = File.Create(Path.Combine(directory, name + ".png")); encoder.Save(file);
+        Render(root, Path.Combine(directory, name + ".png"));
     }
-    private static bool HasArea(this Rect rect) => !rect.IsEmpty && rect.Width > 0.1 && rect.Height > 0.1;
+    private static void Render(Control root, string file)
+    {
+        var size = new PixelSize((int)root.Bounds.Width, (int)root.Bounds.Height);
+        using var bitmap = new RenderTargetBitmap(size, new Vector(96, 96));
+        bitmap.Render(root);
+        var pixels = new byte[size.Width * size.Height * 4];
+        var pinned = GCHandle.Alloc(pixels, GCHandleType.Pinned);
+        try { bitmap.CopyPixels(new PixelRect(size), pinned.AddrOfPinnedObject(), pixels.Length, size.Width * 4); }
+        finally { pinned.Free(); }
+        Require(pixels.Distinct().Count() > 100, "Rendered image contains content");
+        bitmap.Save(file, new PngBitmapEncoderOptions());
+    }
+    private static bool HasArea(Rect rect) => rect.Width > 0.1 && rect.Height > 0.1;
 }

@@ -3,7 +3,7 @@
 This specification defines the protocol between the C# host and the wireless bridge device. The device
 model plays no part in compatibility decisions. The version 1 reference implementations are in
 `firmware/esp32-c6/main/` and `firmware/esp32-c3/main/` (`ldn_wire.c`, `ldn_control.c`, `ldn_udp.c`), with
-the `firmware/esp32-s3/main/` and `firmware/esp32/main/` ports derived from the C3 implementation;
+the `firmware/bridge-common/` sources shared by the S3 and C6 bridges and the `firmware/esp32/main/` port, all derived from the C3 implementation;
 the host implementation is in `host/core/SerialProtocol.cs` and `host/core/TradeSession.cs`.
 Paths in this document are relative to the repository root.
 
@@ -215,3 +215,56 @@ sequenceDiagram
 
 Automated reference: the C# tests in `host/tests`. `host/tests/fixtures/vectors.json` provides fixed protocol
 vectors with synthetic keys; real captures and the optional trade replay stay in `local/` only.
+
+## Version 2 additions: the session on the chip
+
+The bridge firmware under `firmware/` keeps this framing and adds a second way of
+working. The device holds the keys (provisioned once with `LDN_KEY`, stored in NVS)
+and runs LDN authentication, Pia and the link-layer shim itself, so a host no longer
+handles key material or Wi-Fi traffic. What the host can supply instead is the GBA
+side of the link.
+
+| Type | Direction | payload |
+| --- | --- | --- |
+| 6 | device -> host | bytes for the adapter: whole GB-Link frames |
+| 7 | host -> device | bytes from the adapter: a GB-Link frame stream |
+
+A GB-Link frame is `0x47 0x42 | channel:1 | length:2 LE | payload`, the framing the
+GB-Link uses on its serial transports; channel 0 is commands, 1 data, 2 status. Kind 6
+carries one whole frame. Kind 7 is a byte stream and need not be frame-aligned. Neither
+is acknowledged, and kind 7 is accepted without a session check.
+
+Where those bytes go depends on `LDN_ADAPTER`:
+
+| Command | Effect |
+| --- | --- |
+| `LDN_ADAPTER uart` | Default. The adapter is a GB-Link wired to the board's UART. Kinds 6 and 7 then relay that UART to the host while the on-chip bridge is stopped. |
+| `LDN_ADAPTER host` | The host stands in for the adapter. Everything the bridge would send to the GB-Link arrives as kind 6, starting with its SetMode request (`47 42 00 03 00 00 07 00`), and kind 7 is fed to the bridge as if it came from the GB-Link. Binary mode only; `LDN_ERROR NOT_BINARY` otherwise, and `LDN_ERROR NO_MEMORY` if the queue for those frames, which is made on the first request, cannot be. |
+| `LDN_ADAPTER` | Reports the current setting. |
+
+With the adapter on the host port a client can pipe the frames to a GB-Link it holds
+over USB (`firmware/tools/host_bridge.py` does exactly this), or answer them itself to
+play the GBA. The setting is not kept across a restart, and the firmware restarts
+itself when a session ends, so a client re-establishes binary mode and the port after
+the device comes back.
+
+The bridge starts with the board and owns the radio while it runs: `LDN_SCAN`,
+`LDN_CONFIG` and `LDN_STOP` then answer `LDN_ERROR BRIDGE_OWNS_RADIO`. A host that runs
+the session itself, as in version 1, sends `LDN_BRIDGE_STOP` after `LDN_BEGIN` (the
+bridge leaves any room it is in and the radio is the host's), and `LDN_BRIDGE_START`
+after its final `LDN_STOP`, so the board carries on as it does on its own.
+`host/core/SerialProtocol.cs` does this, and refuses firmware that does not answer
+`LDN_INFO` with version 2.0 or later.
+
+A UART console runs at 921600 baud from its first line (what a chip's ROM prints
+before that is at 115200), so a host opens the port at that rate and `LDN_BAUD` is not
+needed; a chip's own USB port ignores the rate. Opening the port resets the chip on
+some systems, so a host repeats `LDN_BINARY` and `LDN_HELLO` until the firmware has
+started.
+
+Other additions: `LDN_INFO` reports `LDN_INFO frlg-ldn-bridge <version> chip=<target>
+transport=<name>` with no side effects, which text `LDN_HELLO` does not (it switches
+the console to binary mode); `LDN_RF` reports the signal strength of the room's
+advertisements since the last call; `LDN_ANTENNA 0|1` selects the onboard or external
+antenna on boards with a switch. In binary mode the bridge's own log lines arrive as
+type 3 messages.

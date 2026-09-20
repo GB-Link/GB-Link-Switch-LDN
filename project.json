@@ -1,5 +1,5 @@
 {
-  "name": "frlg-ldn-trade-esp32",
+  "name": "GB-Link-Switch-LDN",
   "schema": 2,
   "firmware": "firmware",
   "core": "host/core",

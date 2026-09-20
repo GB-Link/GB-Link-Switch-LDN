@@ -1,0 +1,20 @@
+CONFIG_IDF_TARGET="esp32"
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_40M=y
+# No native USB: the console is UART0 behind the board's USB bridge. It runs at 921600
+# from the first line the firmware prints, because a browser cannot change the rate of
+# a port it has open, and carrying the adapter's traffic takes more than 115200 gives.
+# "Custom" is what unlocks the rate in ESP-IDF; the port and pins stay UART0 on GPIO1/3.
+CONFIG_ESP_CONSOLE_UART_CUSTOM=y
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=921600
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_PICO_LINK_TX_GPIO=17
+CONFIG_PICO_LINK_RX_GPIO=16
+CONFIG_LWIP_DHCPS_STATIC_ENTRIES=y
+CONFIG_FREERTOS_HZ=1000
+# 1.5 MB for the app; the NVS partition that holds the keys stays where the default table puts it.
+CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+# Static data is limited to about 124 KB on this chip and the context does not fit;
+# it is taken from the heap first thing at boot instead.
+CONFIG_PIA_STATIC_ZSTD_CONTEXT=n

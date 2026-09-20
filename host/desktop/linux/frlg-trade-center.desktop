@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=FRLG Trade Center
+Comment=Trade with Pokémon FireRed and LeafGreen on a Nintendo Switch through an ESP32 board
+Exec=Frlg.Trade.Desktop
+Icon=frlg-trade-center
+Categories=Game;
+Terminal=false
+StartupWMClass=Frlg.Trade.Desktop

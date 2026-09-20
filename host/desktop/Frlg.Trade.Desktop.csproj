@@ -1,18 +1,29 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net10.0-windows</TargetFramework>
-    <UseWPF>true</UseWPF>
+    <TargetFramework>net10.0</TargetFramework>
+    <!-- Set here, not in the publish profiles, so every restore resolves the same packages and one lock
+         file serves both setup scripts. The analyzer keeps the ILLink package referenced when
+         PublishSingleFile is off. -->
+    <RuntimeIdentifiers>win-x64;linux-x64</RuntimeIdentifiers>
+    <EnableSingleFileAnalyzer>true</EnableSingleFileAnalyzer>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AssemblyName>Frlg.Trade.Desktop</AssemblyName>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
   </PropertyGroup>
   <ItemGroup>
-    <EmbeddedResource Include="../../assets/party/*.pk3" LogicalName="Assets.party.%(Filename)%(Extension)" />
+    <AvaloniaResource Include="Assets/icon.png" />
+    <EmbeddedResource Include="../../assets/party.json" LogicalName="Assets.party.json" />
     <EmbeddedResource Include="../../assets/sprites/*.png" LogicalName="Assets.sprites.%(Filename)%(Extension)" />
     <ProjectReference Include="../core/Frlg.Trade.Core.csproj" />
+    <PackageReference Include="Avalonia" Version="12.1.2" />
+    <PackageReference Include="Avalonia.Desktop" Version="12.1.2" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.2" />
+    <PackageReference Include="Avalonia.Fonts.Inter" Version="12.1.2" />
+    <PackageReference Include="Avalonia.Headless" Version="12.1.2" />
     <PackageReference Include="PKHeX.Core" Version="26.8.26" />
     <PackageReference Include="System.IO.Ports" Version="10.0.7" />
   </ItemGroup>

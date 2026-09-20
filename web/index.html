@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>GB-Link Switch LDN</title>
+    <meta name="description" content="Set up an ESP32 and a GB-Link adapter so a real Game Boy Advance can trade and battle with Pokémon FireRed and LeafGreen on Nintendo Switch.">
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%237c8cff'/%3E%3Cpath d='M9 12h14M9 20h14M12 9l-3 3 3 3M20 17l3 3-3 3' stroke='%230b0d18' stroke-width='2.4' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <header class="masthead">
+        <h1>GB-Link Switch LDN</h1>
+        <p>Trade and battle between a real Game Boy Advance and Pokémon FireRed / LeafGreen on Nintendo Switch. This page sets up the two boards that make it possible, and can carry the link between them.</p>
+    </header>
+
+    <main>
+        <p id="unsupported" class="notice notice-error" hidden></p>
+
+        <section class="card" id="esp-card" aria-labelledby="esp-title">
+            <div class="card-head">
+                <span class="step">1</span>
+                <div>
+                    <h2 id="esp-title">ESP32 board</h2>
+                    <p class="sub">Joins the Switch's wireless room. ESP32-S3, C6, C3 or the original ESP32.</p>
+                </div>
+                <span class="dot" id="esp-dot"></span>
+            </div>
+            <p class="status" id="esp-status" aria-live="polite"></p>
+            <p class="hint" id="esp-hint"></p>
+            <div class="progress" id="esp-progress" hidden><div class="bar"></div></div>
+            <div class="actions" id="esp-actions">
+                <button class="primary" id="esp-primary"></button>
+                <button class="quiet" id="esp-secondary" hidden></button>
+            </div>
+
+            <div class="panel" id="keys-panel" hidden>
+                <label class="drop" id="keys-drop">
+                    <input type="file" id="keys-file" accept=".keys,.txt,text/plain">
+                    <strong>Drop your <code>prod.keys</code> here</strong>
+                    <span>or click to choose the file</span>
+                </label>
+                <p class="status" id="keys-status" aria-live="polite"></p>
+                <p class="fine">The Switch encrypts its local wireless with keys from the console, so the board needs four of them from your own Switch. The file is read here in your browser and only those four values go to the board, over USB. Nothing is uploaded.</p>
+            </div>
+
+            <details class="more" id="esp-details" hidden>
+                <summary>Details</summary>
+                <dl class="facts">
+                    <div><dt>Chip</dt><dd id="esp-chip">–</dd></div>
+                    <div><dt>Firmware</dt><dd id="esp-version">–</dd></div>
+                    <div><dt>Console</dt><dd id="esp-transport">–</dd></div>
+                    <div><dt>Signal from the Switch</dt><dd id="esp-signal">–</dd></div>
+                </dl>
+            </details>
+            <details class="more" id="esp-more" hidden>
+                <summary>More options</summary>
+                <div class="actions">
+                    <button id="esp-reinstall">Install the firmware again</button>
+                    <button id="esp-wipe">Erase everything and install</button>
+                    <button id="keys-replace">Replace the keys</button>
+                    <button id="keys-erase">Erase the keys</button>
+                    <button id="esp-disconnect">Disconnect</button>
+                </div>
+                <p class="fine">Installing again keeps the stored keys. Erasing everything does not.</p>
+            </details>
+        </section>
+
+        <section class="card" id="adapter-card" aria-labelledby="adapter-title">
+            <div class="card-head">
+                <span class="step">2</span>
+                <div>
+                    <h2 id="adapter-title">GB-Link adapter</h2>
+                    <p class="sub">Plugs into the Game Boy Advance in place of a Wireless Adapter.</p>
+                </div>
+                <span class="dot" id="adapter-dot"></span>
+            </div>
+            <p class="status" id="adapter-status" aria-live="polite"></p>
+            <p class="hint" id="adapter-hint"></p>
+            <ol class="steps" id="adapter-steps" hidden>
+                <li data-step="restart"><span id="adapter-step-restart">Put the adapter in update mode</span></li>
+                <li data-step="choose">Let the browser use it: click the button and pick <strong>RP2 Boot</strong>
+                    <div class="actions"><button class="primary" id="adapter-select">Choose “RP2 Boot”</button></div></li>
+                <li data-step="write">Write the firmware
+                    <div class="progress" id="adapter-progress"><div class="bar"></div></div></li>
+                <li data-step="reconnect">Reconnect</li>
+            </ol>
+            <div class="actions" id="adapter-actions">
+                <button class="primary" id="adapter-primary"></button>
+                <button class="quiet" id="adapter-secondary" hidden></button>
+            </div>
+
+            <details class="more" id="adapter-details" hidden>
+                <summary>Details</summary>
+                <dl class="facts">
+                    <div><dt>Firmware</dt><dd id="adapter-version">–</dd></div>
+                    <div><dt>Wireless adapter mode</dt><dd id="adapter-wireless">–</dd></div>
+                    <div><dt>Connected over</dt><dd id="adapter-kind">–</dd></div>
+                </dl>
+            </details>
+            <details class="more" id="adapter-more">
+                <summary>More options</summary>
+                <div class="actions">
+                    <button id="adapter-reinstall">Install the firmware again</button>
+                    <button id="adapter-connect-serial">Connect over serial instead</button>
+                    <button id="adapter-disconnect">Disconnect</button>
+                </div>
+                <p class="fine">Install a <code>.uf2</code> of your own: <input type="file" id="adapter-file" accept=".uf2"> <button class="quiet" id="adapter-file-clear" hidden>Back to the bundled firmware</button></p>
+                <p class="status" id="adapter-file-status" aria-live="polite"></p>
+                <p class="fine">By hand: hold BOOTSEL while plugging the adapter in, then copy <a id="adapter-download" href="#" download>the firmware file</a> onto the <code>RPI-RP2</code> drive that appears. <button class="quiet" id="adapter-bootsel" hidden>Restart the adapter in update mode</button></p>
+            </details>
+        </section>
+
+        <section class="card" id="play-card" aria-labelledby="play-title">
+            <div class="card-head">
+                <span class="step">3</span>
+                <div>
+                    <h2 id="play-title">Play</h2>
+                    <p class="sub">The two boards talk either over a few wires, with no computer involved, or through this page.</p>
+                </div>
+                <span class="dot" id="play-dot"></span>
+            </div>
+
+            <div class="session" id="session" hidden>
+                <p class="headline" id="session-headline">–</p>
+                <p class="hint" id="session-hint"></p>
+            </div>
+
+            <div class="choices">
+                <div class="choice">
+                    <h3>Standalone</h3>
+                    <p>Join the boards with three wires and power them from anything. This page is not needed while you play.</p>
+                    <p class="fine" id="wiring">Connect the board in step 1 to see which of its pins go to the adapter's <strong>GP8</strong> and <strong>GP9</strong>.</p>
+                    <table class="wires" id="wires" hidden>
+                        <thead><tr><th>ESP32 board</th><th>GB-Link adapter</th></tr></thead>
+                        <tbody>
+                            <tr><td id="wire-rx"></td><td>GP8</td></tr>
+                            <tr><td id="wire-tx"></td><td>GP9</td></tr>
+                            <tr><td>GND</td><td>GND</td></tr>
+                        </tbody>
+                    </table>
+                    <div class="actions"><button id="wiring-check" disabled>Check the wiring</button></div>
+                    <p class="status" id="wiring-status" aria-live="polite"></p>
+                </div>
+                <div class="choice">
+                    <h3>Through this computer</h3>
+                    <p>Leave both boards plugged into USB and let this page carry the link. Keep the tab open and in view while you play.</p>
+                    <div class="actions">
+                        <button class="primary" id="bridge-start" disabled>Start</button>
+                        <button id="bridge-stop" hidden>Stop</button>
+                    </div>
+                    <p class="status" id="bridge-status" aria-live="polite">Connect both boards first.</p>
+                    <dl class="facts" id="bridge-facts" hidden>
+                        <div><dt>To the adapter</dt><dd id="bridge-out">0 frames</dd></div>
+                        <div><dt>From the adapter</dt><dd id="bridge-in">0 KB</dd></div>
+                        <div><dt>Board restarts followed</dt><dd id="bridge-sessions">0</dd></div>
+                    </dl>
+                </div>
+            </div>
+
+            <details class="more" open>
+                <summary>On the consoles</summary>
+                <ol class="fine">
+                    <li>On the Switch, go upstairs in a Pokémon Center to the Direct Corner, choose Trade Center or Colosseum, and become the group leader.</li>
+                    <li>On the Game Boy Advance, with the adapter plugged in, choose the same activity and join a group. The Switch player is listed after a few seconds.</li>
+                    <li>When you leave the room, the ESP32 board restarts and is ready for the next one about ten seconds later.</li>
+                </ol>
+                <p class="fine">Trades and single battles work. Trading without a Game Boy Advance (the page standing in for the GBA) is not part of this page yet; the desktop app in <code>host/</code> does that, on Windows and Linux, with the same firmware.</p>
+            </details>
+        </section>
+
+        <section class="card" id="log-card" aria-labelledby="log-title">
+            <details>
+                <summary><h2 id="log-title">Log</h2></summary>
+                <div class="actions">
+                    <button class="quiet" id="log-copy">Copy</button>
+                    <button class="quiet" id="log-clear">Clear</button>
+                </div>
+                <pre id="log" tabindex="0"></pre>
+            </details>
+        </section>
+    </main>
+
+    <footer>
+        <p>Runs entirely in your browser: Chrome, Edge or another Chromium browser on a computer. <a href="https://github.com/GB-Link/GB-Link-Switch-LDN">Source and documentation</a> · AGPL-3.0. Flashing uses <a href="https://github.com/espressif/esptool-js">esptool-js</a> (Apache-2.0) and <a href="https://github.com/picoflash/picoflash">picoflash</a> (MIT). Not affiliated with Nintendo or The Pokémon Company.</p>
+    </footer>
+
+    <script type="module" src="js/app.js"></script>
+</body>
+</html>
