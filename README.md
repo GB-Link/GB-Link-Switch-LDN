@@ -63,11 +63,6 @@ next one about ten seconds later.
 | --- | --- |
 | [`web`](web/README.md) | The web client: installs both firmwares, stores the keys, carries the link over USB |
 | [`firmware`](firmware/README.md) | Bridge firmware: one source tree (`common/`) built for four chips, plus build and test tools |
-| `firmware/old` | The radio-only firmware from before this rework, with its prebuilt images. Nothing here uses it any more |
-| [`host`](host/README.md) | C# desktop app (Windows and Linux) and console host: trading from a PC without a GBA, on the same firmware |
-| [`docs/SERIAL_PROTOCOL.md`](docs/SERIAL_PROTOCOL.md) | The console protocol both firmwares speak |
-| `assets` | Default Pokémon and sprites for the PC hosts |
-| `app`, `local` | Build output and local data of the PC hosts; not published |
 
 ## Building
 
