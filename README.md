@@ -1,5 +1,7 @@
 # GB-Link Switch LDN
 
+Setup and trade/battle at https://switch.gblink.io
+
 Link a real Game Boy Advance to Pokémon FireRed and LeafGreen on Nintendo Switch.
 The GBA joins the Switch's Trade Center or Colosseum as if the Switch were another GBA
 with a Wireless Adapter, and trades and single battles work.
@@ -16,17 +18,13 @@ protocol. A [GB-Link](https://github.com/GB-Link/GBLink-Firmware) adapter on the
 link port plays the Wireless Adapter. The two boards talk over three wires, with no
 computer involved, or over USB with a web page carrying the traffic between them.
 
-This is a fork of [easyworld/frlg-ldn-trade-esp32](https://github.com/easyworld/frlg-ldn-trade-esp32),
+ESP32 LDN support is based on [easyworld/frlg-ldn-trade-esp32](https://github.com/easyworld/frlg-ldn-trade-esp32),
 itself a port of [tornadus/frlg-ldn-trade](https://github.com/tornadus/frlg-ldn-trade).
-Upstream trades with the Switch from a PC that plays the other game; that still works
-and is described in [`host/`](host/README.md). This fork adds the firmware that runs the
-session on the chip for a real GBA, the GB-Link side of it, and the web client.
 
 ## What you need
 
-- An ESP32 board. The ESP32-S3 is the one this has been played on; the others build from
-  the same source and await testing.
-
+- An ESP32 board.
+- 
   | Chip | Computer connection | Status |
   | --- | --- | --- |
   | ESP32-S3 | native USB | trades and single battles, wired and through the browser |
@@ -35,15 +33,14 @@ session on the chip for a real GBA, the GB-Link side of it, and the web client.
   | ESP32 (original) | USB-to-UART bridge, 921600 baud | starts, sets up and carries the link from the web client; not yet played on |
 
 - A GB-Link adapter with the firmware that has the wireless adapter mode. The web
-  client installs it.
-- A Nintendo Switch with FireRed or LeafGreen, and that console's `prod.keys`: the
-  Switch encrypts its local wireless with keys from the console, and the bridge needs
-  four of them.
-- A Game Boy Advance with FireRed or LeafGreen.
+  client installs it if needed.
+- A Nintendo Switch with FireRed or LeafGreen, and a copy of `prod.keys`: the
+  Switch encrypts its local wireless with keys from the console, you will need to provide this.
+- A Game Boy Advance with Emerald, FireRed or LeafGreen.
 
 ## Setting up
 
-Everything is done from the [web client](web/README.md), in Chrome or Edge on a computer:
+Everything is done from the [web client](https://switch.gblink.io), in Chrome or Edge on a computer:
 
 1. Serve the `web/` folder (`python3 -m http.server -d web 8000`, then
    <http://localhost:8000>), or open wherever it is hosted.
