@@ -1,4 +1,4 @@
-# frlg-ldn-trade-esp32
+# GB-Link Switch LDN
 
 Link a real Game Boy Advance to Pokémon FireRed and LeafGreen on Nintendo Switch.
 The GBA joins the Switch's Trade Center or Colosseum as if the Switch were another GBA
@@ -11,7 +11,7 @@ flowchart LR
     ESP32 <-->|local wireless| Switch["Nintendo Switch<br>FireRed / LeafGreen"]
 ```
 
-An ESP32 joins the Switch's local-wireless room and speaks the Switch's session
+An ESP32 joins the Switch's local-wireless (LDN) room and speaks the Switch's session
 protocol. A [GB-Link](https://github.com/GB-Link/GBLink-Firmware) adapter on the GBA's
 link port plays the Wireless Adapter. The two boards talk over three wires, with no
 computer involved, or over USB with a web page carrying the traffic between them.
@@ -66,8 +66,8 @@ next one about ten seconds later.
 | --- | --- |
 | [`web`](web/README.md) | The web client: installs both firmwares, stores the keys, carries the link over USB |
 | [`firmware`](firmware/README.md) | Bridge firmware: one source tree (`common/`) built for four chips, plus build and test tools |
-| `firmware/old` | The radio-only firmware the PC hosts drive, with its prebuilt images, as it was before this rework |
-| [`host`](host/README.md) | C# desktop app and console host: trading from a PC without a GBA |
+| `firmware/old` | The radio-only firmware from before this rework, with its prebuilt images. Nothing here uses it any more |
+| [`host`](host/README.md) | C# desktop app (Windows and Linux) and console host: trading from a PC without a GBA, on the same firmware |
 | [`docs/SERIAL_PROTOCOL.md`](docs/SERIAL_PROTOCOL.md) | The console protocol both firmwares speak |
 | `assets` | Default Pokémon and sprites for the PC hosts |
 | `app`, `local` | Build output and local data of the PC hosts; not published |

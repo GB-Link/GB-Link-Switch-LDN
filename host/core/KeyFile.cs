@@ -36,13 +36,32 @@ public sealed class KeyFile
         return key;
     }
     public bool Supports(int protocol) => values.ContainsKey(protocol == 1 ? "master_key_00" : "master_key_12");
-    public static string Find(string executableDirectory, string userDirectory)
+    public static string? Locate(string executableDirectory, string userDirectory)
     {
         string local = Path.Combine(executableDirectory, "prod.keys");
         if (File.Exists(local)) return local;
         string home = Path.Combine(userDirectory, ".switch", "prod.keys");
-        if (File.Exists(home)) return home;
-        throw new MissingKeysException(executableDirectory);
+        return File.Exists(home) ? home : null;
     }
-    public static KeyFile LoadDefault() => new(Find(AppContext.BaseDirectory, Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)));
+    public static string Find(string executableDirectory, string userDirectory) =>
+        Locate(executableDirectory, userDirectory) ?? throw new MissingKeysException(executableDirectory);
+    private static string UserDirectory => Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+    public static bool Present => Locate(ProgramDirectory.Path, UserDirectory) != null;
+    public static KeyFile LoadDefault() => new(Find(ProgramDirectory.Path, UserDirectory));
+
+    public static readonly string[] Used = ["aes_kek_generation_source", "aes_key_generation_source", "master_key_00", "master_key_12"];
+
+    // Copies only the entries in Used: the rest of a prod.keys unlocks far more than this program needs.
+    public static KeyFile Import(string source, string programDirectory)
+    {
+        var keys = new KeyFile(source);
+        var lines = Used.Where(keys.values.ContainsKey).Select(name => $"{name} = {Convert.ToHexString(keys.values[name]).ToLowerInvariant()}");
+        Directory.CreateDirectory(programDirectory);
+        string target = Path.Combine(programDirectory, "prod.keys"), temp = target + ".tmp";
+        var options = new FileStreamOptions { Mode = FileMode.Create, Access = FileAccess.Write };
+        if (!OperatingSystem.IsWindows()) options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+        using (var writer = new StreamWriter(temp, options)) foreach (string line in lines) writer.WriteLine(line);
+        File.Move(temp, target, true);
+        return new KeyFile(target);
+    }
 }

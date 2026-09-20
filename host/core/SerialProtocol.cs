@@ -48,9 +48,35 @@ public static class SerialCodec
     }
 }
 
+public interface ISerialLink : IDisposable
+{
+    int BytesToRead { get; }
+    int Read(byte[] buffer, int offset, int count);
+    void Write(byte[] buffer, int offset, int count);
+    void DiscardInBuffer();
+}
+
+public sealed class SerialPortLink : ISerialLink
+{
+    // Firmware 2.0 runs its UART console at this rate from boot; native USB ports ignore it.
+    public const int Baud = 921600;
+    private readonly SerialPort port;
+    public SerialPortLink(string name)
+    {
+        port = new(name, Baud) { DtrEnable = false, RtsEnable = false, ReadTimeout = 20, WriteTimeout = 2000,
+            ReadBufferSize = 65536, WriteBufferSize = 32768 };
+        port.Open();
+    }
+    public int BytesToRead => port.BytesToRead;
+    public int Read(byte[] buffer, int offset, int count) => port.Read(buffer, offset, count);
+    public void Write(byte[] buffer, int offset, int count) => port.Write(buffer, offset, count);
+    public void DiscardInBuffer() => port.DiscardInBuffer();
+    public void Dispose() => port.Dispose();
+}
+
 public sealed class SerialDevice : IDisposable
 {
-    private readonly SerialPort port;
+    private readonly ISerialLink port;
     private readonly CancellationToken cancel;
     private readonly List<byte> buffer = [];
     private readonly Queue<SerialFrame> events = [];
@@ -61,14 +87,10 @@ public sealed class SerialDevice : IDisposable
     private bool stopping;
     public uint Session { get; private set; }
     public string Model { get; private set; } = "";
+    public string Firmware { get; private set; } = "";
     public int BadFrames { get; private set; }
-    public SerialDevice(string name, CancellationToken cancel)
-    {
-        this.cancel = cancel;
-        port = new(name, 115200) { DtrEnable = false, RtsEnable = false, ReadTimeout = 20, WriteTimeout = 2000,
-            ReadBufferSize = 65536, WriteBufferSize = 32768 };
-        port.Open();
-    }
+    public SerialDevice(string name, CancellationToken cancel) : this(new SerialPortLink(name), cancel) { }
+    public SerialDevice(ISerialLink link, CancellationToken cancel) { port = link; this.cancel = cancel; }
     private void Write(byte[] data) => port.Write(data, 0, data.Length);
     public void Pump()
     {
@@ -132,25 +154,37 @@ public sealed class SerialDevice : IDisposable
         }
         finally { responses.Remove(id); done.Remove(id); }
     }
+    private const string InstallAdvice = "Install the current firmware with the web client (web/), then connect again.";
     public void Handshake()
     {
+        // Opening the port can reset the chip through DTR/RTS, and it takes about a second to boot.
         List<string>? reply = null;
-        foreach (int baud in new[] { 115200, 921600 })
+        var patience = Stopwatch.StartNew();
+        while (reply == null && patience.Elapsed.TotalSeconds < 8)
         {
-            port.BaudRate = baud; port.DiscardInBuffer(); buffer.Clear();
+            port.DiscardInBuffer(); buffer.Clear(); overflow = false;
             Write(Encoding.ASCII.GetBytes("\nLDN_BINARY\n")); Write([0]);
-            try { reply = Command("LDN_HELLO", 2); break; } catch (TimeoutException) { }
+            try { reply = Command("LDN_HELLO", 1); } catch (TimeoutException) { }
         }
         string? hello = reply?.FirstOrDefault(l => l.StartsWith("LDN_HELLO 1 "));
-        if (hello == null) throw new ConnectionException("The device does not speak serial protocol v1; install newer firmware with dynamic-session support first.");
+        if (hello == null) throw new ConnectionException("No bridge firmware answered on this port. " + InstallAdvice);
         var fields = hello.Split(' ');
         if (fields.Length != 5 || new[] { "dynamic-session", "scan", "auth", "udp" }.Except(fields[3].Split(',')).Any() ||
             !int.TryParse(fields[4], out int mtu) || mtu < 1472)
             throw new ConnectionException("The device's capabilities do not meet the trade requirements.");
         Model = fields[2];
-        if (port.BaudRate != 921600) { Command("LDN_BAUD 921600"); port.BaudRate = 921600; }
         Session = Bin.U32(RandomNumberGenerator.GetBytes(4)) | 1;
-        Command($"LDN_BEGIN {Session:x8}", 8); events.Clear(); BadFrames = 0;
+        Command($"LDN_BEGIN {Session:x8}", 8);
+        // LDN_INFO frlg-ldn-bridge <version> chip=<chip> transport=<name>; unknown to firmware before 2.0.
+        string[] info;
+        try { info = (Command("LDN_INFO").FirstOrDefault(l => l.StartsWith("LDN_INFO ")) ?? "").Split(' '); }
+        catch (ConnectionException) { info = []; }
+        if (info.Length < 3 || info[1] != "frlg-ldn-bridge" || !Version.TryParse(info[2], out var version) || version.Major < 2)
+            throw new ConnectionException("This board runs firmware from before 2.0. " + InstallAdvice);
+        Firmware = info[2];
+        // The firmware's own bridge owns the radio while it runs (LDN_ERROR BRIDGE_OWNS_RADIO).
+        Command("LDN_BRIDGE_STOP", 5);
+        events.Clear(); BadFrames = 0;
     }
     public void SendDatagram(byte[] data, string destination)
     {
@@ -159,6 +193,11 @@ public sealed class SerialDevice : IDisposable
     }
     public List<SerialFrame> Drain()
     { Pump(); var list = events.ToList(); events.Clear(); return list; }
-    public void Stop() { stopping = true; Command("LDN_STOP", 5); }
+    public void Stop()
+    {
+        stopping = true;
+        try { Command("LDN_STOP", 5); }
+        finally { Command("LDN_BRIDGE_START", 5); }
+    }
     public void Dispose() => port.Dispose();
 }

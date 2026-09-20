@@ -21,15 +21,17 @@ public sealed class TradeEngine
     public event Action<byte[]?[], string>? OpponentParty;
     public event Action<byte[], int>? Committed;
     public event Action<string>? Log;
+    public event Action<string>? Notice;
+    public event Action<bool>? DecliningChanged;
     private readonly byte[][] party;
-    private readonly int offered;
+    private int offered, sentCursor = -1;
     private readonly BlockReceive[] receivers = Enumerable.Range(0, 5).Select(_ => new BlockReceive()).ToArray();
     private BlockSend? sender;
     private byte[]? pending;
     private byte[] hostParty = new byte[600];
     private int sentParty, hostBlocks, settle, hostCursor = -1, animWait = -1, reselect = -1;
     private bool playerSent, cardSupplied, seatOver, menuComplete, ribbons, selected, confirmed, finishSent, pendingConfirm;
-    private bool leaving, cancelled, cancelAfterSend, cancelBarrier, returnBarrier, postCancel, saveBarriers, seam;
+    private bool declining, trading, cancelled, cancelAfterSend, cancelBarrier, returnBarrier, postCancel, saveBarriers, seam;
     private int saveSettle, firstEmits, secondEmits, thirdEmits, fourthEmits, thirdGap, fourthGap, postSeat;
     private bool seated;
     public int AnimationFrames { get; set; } = 1935;
@@ -52,6 +54,42 @@ public sealed class TradeEngine
         var wire = new byte[100]; p.WriteEncryptedDataParty(wire); return wire;
     }
     public void Sit() { if (seated) return; seated = true; postSeat = 20; }
+
+    // The game leaves the trade menu only when both sides send Cancel, and the leader transmits its Cancel
+    // but never its Ready. So this side sends Ready unprompted, switches to Cancel once the leader has sent
+    // one, and back to Ready on PartnerCancel (the leader chose a Pokémon against this side's Cancel).
+    public bool Declining => declining;
+    public int Offered => offered;
+    private bool Occupied(int slot) => party[slot].Any(b => b != 0);
+    private void SetDeclining(bool value, string? notice)
+    {
+        if (declining == value) return;
+        declining = value;
+        Log?.Invoke(value ? "Declining the trade" : "Offering the trade again");
+        if (notice != null) Notice?.Invoke(notice);
+        DecliningChanged?.Invoke(value);
+    }
+    // The leader keeps only the follower's latest Ready or Cancel until its own player has answered, so a
+    // later block replaces an earlier one.
+    public void Decline()
+    {
+        if (declining || Done || State == 4) return;
+        SetDeclining(true, State == 3 ? "Cancelling the trade: answer the question on the Switch, then choose CANCEL there"
+            : "Cancelling the trade: choose CANCEL on the Switch to leave");
+        if (State == 3) pending = LinkCommand(ReadyCancel);
+        else if (selected) pending = LinkCommand(Cancel);
+    }
+    public bool Offer(int slot)
+    {
+        if (slot is < 0 or > 5 || !Occupied(slot) || Done || cancelBarrier || returnBarrier || postCancel) return false;
+        if (slot == offered && !declining) return true;
+        offered = slot;
+        Log?.Invoke($"Offering slot {slot + 1}");
+        if (State is 3 or 4) { Notice?.Invoke("The Switch is already confirming a trade: the new choice applies to the next one"); return true; }
+        SetDeclining(false, null);
+        if (selected) pending = LinkCommand(Ready, offered);
+        return true;
+    }
     private void Begin(byte[] data) { receivers[1] = new(); sender = new(data); }
     public void Feed(IReadOnlyList<byte[]> slots)
     {
@@ -118,19 +156,24 @@ public sealed class TradeEngine
             case SetMons:
                 if (cursor is < 0 or > 5) throw new InvalidDataException("Invalid opponent cursor");
                 hostCursor = cursor;
-                if (State is 1 or 2) { State = 3; if (!confirmed) { confirmed = true; pending = LinkCommand(InitBlock); } }
+                // A Decline that raced the leader's SetMons answers the confirmation with ReadyCancel.
+                if (State is 1 or 2) { State = 3; if (!confirmed) { confirmed = true; pending = LinkCommand(declining ? ReadyCancel : InitBlock); } }
+                break;
+            case Cancel:
+                if (!Done) SetDeclining(true, "The Switch asked to cancel: choose CANCEL there once more to leave the trade");
                 break;
             case Start:
-                if (!cancelled) { State = 4; animWait = AnimationFrames; }
+                if (!cancelled) { State = 4; animWait = AnimationFrames; trading = true; }
                 break;
             case ConfirmFinish:
-                if (cancelled || Commits != 0) break;
+                if (cancelled || !trading) break;
                 if (finishSent) Commit(); else pendingConfirm = true;
                 break;
             case BothCancel:
                 State = 6; cancelled = true; cancelBarrier = true; Barrier.Initiate(); break;
             case PlayerCancel:
             case PartnerCancel:
+                if (command == PartnerCancel) SetDeclining(false, "A Pokémon was chosen on the Switch: offering the trade again");
                 State = 1; selected = false; reselect = 60; pending = null; cancelAfterSend = false;
                 confirmed = false; cancelled = false; hostCursor = -1; break;
         }
@@ -141,9 +184,11 @@ public sealed class TradeEngine
     {
         if (hostCursor < 0 || hostBlocks != 3) throw new InvalidDataException("Trade confirmed without a complete opponent selection");
         var received = hostParty[(hostCursor * 100)..((hostCursor + 1) * 100)];
-        Received = Parse(received).Data.ToArray(); party[offered] = received; Commits++;
-        Committed?.Invoke(Received, offered);
-        saveBarriers = true; saveSettle = 0; leaving = true;
+        // The traded slot is the cursor of the last Ready sent, which can differ from offered.
+        int slot = sentCursor;
+        Received = Parse(received).Data.ToArray(); party[slot] = received; Commits++; trading = false;
+        Committed?.Invoke(Received, slot);
+        saveBarriers = true; saveSettle = 0;
         sentParty = hostBlocks = settle = 0; hostParty = new byte[600]; hostCursor = -1;
         selected = ribbons = finishSent = pendingConfirm = confirmed = seam = false; animWait = reselect = -1; State = 0;
     }
@@ -168,7 +213,7 @@ public sealed class TradeEngine
         if (sender != null)
         {
             var words = sender.Tick(receivers[1]);
-            if (sender.Done) { sender = null; if (cancelAfterSend && !Done) { cancelAfterSend = false; State = 6; leaving = true; } }
+            if (sender.Done) { sender = null; if (cancelAfterSend && !Done) { cancelAfterSend = false; State = 6; } }
             return words;
         }
         if (cancelBarrier)
@@ -192,13 +237,14 @@ public sealed class TradeEngine
         if (!selected && State == 1 && reselect < 0 && hostBlocks >= 3 && playerSent && sentParty >= 3 && (ribbons || settle >= 600) && pending == null)
         {
             selected = menuComplete = true;
-            if (leaving) { pending = LinkCommand(Cancel); cancelled = true; }
-            else { State = 2; pending = LinkCommand(Ready, offered); }
+            pending = declining ? LinkCommand(Cancel) : LinkCommand(Ready, offered);
         }
         if (pending != null)
         {
             var buf = pending; pending = null;
-            if (Bin.U16(buf) is Cancel or ReadyCancel) cancelAfterSend = cancelled = true;
+            int command = Bin.U16(buf);
+            if (command is Cancel or ReadyCancel) cancelAfterSend = cancelled = true;
+            else if (command == Ready) { State = 2; cancelAfterSend = cancelled = false; sentCursor = Bin.U16(buf, 2); }
             Begin(buf); return sender!.Tick(receivers[1]);
         }
         if (Established && !HostInSeat)

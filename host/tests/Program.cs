@@ -18,7 +18,7 @@ void Reject(Action action, string label)
 if (args.Length >= 2 && args[0] == "--device")
 {
     using var device = new SerialDevice(args[1], CancellationToken.None);
-    device.Handshake(); Console.WriteLine($"Device handshake: {device.Model}; protocol v1");
+    device.Handshake(); Console.WriteLine($"Device handshake: {device.Model}; bridge firmware {device.Firmware}; protocol v1");
     device.Command("LDN_SCAN 1"); Console.WriteLine("Dynamic scan: OK");
     try { device.Command("LDN_TEST_UNKNOWN"); throw new Exception("Unknown command accepted"); }
     catch (ConnectionException e) when (e.Message.Contains("UNKNOWN_COMMAND")) { Console.WriteLine("Unknown command rejection: OK"); }
@@ -27,23 +27,20 @@ if (args.Length >= 2 && args[0] == "--device")
     device.Command("LDN_SCAN 1"); Console.WriteLine("Command recovery: OK");
     device.Stop(); Console.WriteLine("Stop: OK"); return;
 }
-// Standby party: the same local/party.json the desktop app uses (six hex PK3 slots + offered index).
-string partyFile = Path.Combine(root, "local/party.json");
-(byte[]?[] Slots, int Selected) LoadParty()
+// local/party.json (six hex PK3 slots + offered index), else the built-in assets/party.json.
+string partyFile = Path.Combine(root, "local/party.json"), builtInParty = Path.Combine(root, "assets/party.json");
+(byte[]?[] Slots, int Selected) ReadParty(string file)
 {
-    var slots = new byte[]?[6]; int selected = 1;
-    if (File.Exists(partyFile))
-    {
-        using var doc = JsonDocument.Parse(File.ReadAllText(partyFile));
-        var entries = doc.RootElement.GetProperty("slots").EnumerateArray().ToArray();
-        if (entries.Length != 6) throw new InvalidDataException("local/party.json must have six slots");
-        for (int i = 0; i < 6; i++) slots[i] = entries[i].ValueKind == JsonValueKind.Null ? null : Convert.FromHexString(entries[i].GetString()!);
-        selected = doc.RootElement.GetProperty("selected").GetInt32();
-    }
-    else { slots[0] = File.ReadAllBytes(Path.Combine(root, "assets/party/mewtwo.pk3")); slots[1] = File.ReadAllBytes(Path.Combine(root, "assets/party/deoxys.pk3")); }
+    var slots = new byte[]?[6];
+    using var doc = JsonDocument.Parse(File.ReadAllText(file));
+    var entries = doc.RootElement.GetProperty("slots").EnumerateArray().ToArray();
+    if (entries.Length != 6) throw new InvalidDataException($"{file} must have six slots");
+    for (int i = 0; i < 6; i++) slots[i] = entries[i].ValueKind == JsonValueKind.Null ? null : Convert.FromHexString(entries[i].GetString()!);
+    int selected = doc.RootElement.GetProperty("selected").GetInt32();
     if (selected < 0 || selected > 5 || slots[selected] == null) selected = Math.Max(0, Array.FindIndex(slots, x => x != null));
     return (slots, selected);
 }
+(byte[]?[] Slots, int Selected) LoadParty() => ReadParty(File.Exists(partyFile) ? partyFile : builtInParty);
 void SaveParty(byte[]?[] slots, int selected)
 {
     Directory.CreateDirectory(Path.GetDirectoryName(partyFile)!);
@@ -272,6 +269,24 @@ try
     var v = vectors.RootElement;
     File.WriteAllLines(exeFile, v.GetProperty("keys").EnumerateObject().Select(p => p.Name + " = " + p.Value.GetString()));
     var keys = new KeyFile(exeFile);
+    {
+        // KeyFile.Import
+        string dump = Path.Combine(temp, "dump.keys"), setup = Path.Combine(temp, "setup");
+        File.WriteAllLines(dump, File.ReadAllLines(exeFile).Prepend("# a console's key file").Append("header_key = " + new string('a', 64)).Append("titlekek_source = " + new string('b', 32)));
+        var imported = KeyFile.Import(dump, setup);
+        string kept = File.ReadAllText(Path.Combine(setup, "prod.keys"));
+        Check(KeyFile.Locate(setup, home) == imported.SourcePath && KeyFile.Used.Where(name => v.GetProperty("keys").TryGetProperty(name, out _)).All(kept.Contains),
+            "Imported key file is found");
+        Check(!kept.Contains("header_key") && !kept.Contains("titlekek_source") && kept.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length <= KeyFile.Used.Length,
+            "Import keeps only the used entries");
+        Equal(imported.Get("aes_kek_generation_source"), keys.Get("aes_kek_generation_source"), "Imported keys read back unchanged");
+        if (!OperatingSystem.IsWindows())
+            Check(File.GetUnixFileMode(Path.Combine(setup, "prod.keys")) == (UnixFileMode.UserRead | UnixFileMode.UserWrite), "Imported key file has mode 600");
+        string bad = Path.Combine(temp, "bad.keys"), untouched = Path.Combine(temp, "untouched");
+        File.WriteAllText(bad, "master_key_00 = " + new string('c', 32) + "\n");
+        try { KeyFile.Import(bad, untouched); throw new Exception("Unusable key file imported"); } catch (InvalidDataException) { checks++; }
+        Check(!File.Exists(Path.Combine(untouched, "prod.keys")), "Failed import writes nothing");
+    }
     foreach (var a in v.GetProperty("advertisements").EnumerateArray())
     {
         var raw = Bin.Hex(a.GetProperty("raw").GetString()!); var network = LdnKeys.Decode(keys, raw, Bin.Hex("020000000001"), 1);
@@ -306,7 +321,7 @@ try
     Equal(Rfu.PlayerBlock(), Bin.Hex(v.GetProperty("player").GetString()!), "LinkPlayer fixture");
     Equal(Rfu.TrainerCard(), Bin.Hex(v.GetProperty("card").GetString()!), "Trainer card fixture");
     var ni = Rfu.GameData(); foreach (var n in v.GetProperty("ni").EnumerateArray()) Equal(ni.Dequeue(), Bin.Hex(n.GetString()!), "NI fixture");
-    var party = new byte[]?[] { File.ReadAllBytes(Path.Combine(root, "assets/party/mewtwo.pk3")), File.ReadAllBytes(Path.Combine(root, "assets/party/deoxys.pk3")), null, null, null, null };
+    var party = new byte[]?[] { File.ReadAllBytes(Path.Combine(root, "host/tests/fixtures/mewtwo.pk3")), File.ReadAllBytes(Path.Combine(root, "host/tests/fixtures/deoxys.pk3")), null, null, null, null };
     for (int i = 0; i < 2; i++) Equal(TradeEngine.ToWire(party[i]!), Bin.Hex(v.GetProperty("party")[i].GetString()!), "PK3 wire encoding fixture");
     using var crypto = new PiaCrypto(Enumerable.Range(0, 16).Select(i => (byte)i).ToArray());
     using (var sim = new Simulator(Enumerable.Range(0, 16).Select(i => (byte)i).ToArray(),
@@ -352,4 +367,120 @@ try
     else Console.WriteLine("Private trade replay skipped: local/native-tests/engine.json is not present");
 }
 finally { Directory.Delete(temp, true); }
+
+// Built-in party (assets/party.json)
+{
+    var (slots, offered) = ReadParty(builtInParty);
+    Check(slots.Count(x => x != null) >= 2 && slots[offered] != null, "Built-in party can start a trade");
+    foreach (var slot in slots) if (slot != null) { TradeEngine.Parse(slot); checks++; }
+    _ = new TradeEngine(slots, offered); checks++;
+}
+
+// Trade menu: cancel, live offer, repeated trades
+{
+    byte[] Mon(string file, string? nickname = null)
+    {
+        var pk = TradeEngine.Parse(File.ReadAllBytes(Path.Combine(root, "host/tests/fixtures", file)));
+        if (nickname != null) { pk.Nickname = nickname; pk.RefreshChecksum(); }
+        return pk.Data.ToArray();
+    }
+    var mons = new byte[]?[] { Mon("mewtwo.pk3"), Mon("deoxys.pk3"), null, null, null, null };
+    byte[] hostMon = TradeEngine.ToWire(Mon("mewtwo.pk3", "HOSTMON")), hostOther = TradeEngine.ToWire(Mon("deoxys.pk3", "HOSTTWO"));
+
+    var bench = new EngineBench(mons, 1, hostMon, hostOther);
+    Check(bench.Sent.SequenceEqual([(TradeEngine.Ready, 1)]), "Menu opens with Ready for the offered slot");
+
+    bench.Host(TradeEngine.Cancel); bench.Host(TradeEngine.PlayerCancel); bench.Run(90);
+    Check(bench.Engine.Declining && bench.Sent[^1] == (TradeEngine.Cancel, 0) && bench.Sent.Count == 2,
+        "Leader Cancel is answered with Cancel");
+    bench.Host(TradeEngine.PartnerCancel); bench.Run(90);
+    Check(!bench.Engine.Declining && bench.Sent[^1] == (TradeEngine.Ready, 1) && bench.Sent.Count == 3,
+        "PartnerCancel restores the offer");
+
+    bench.Host(TradeEngine.SetMons, 2); bench.Run(30);
+    Check(bench.Sent[^1] == (TradeEngine.InitBlock, 0), "SetMons is confirmed with InitBlock");
+    bench.Host(TradeEngine.ReadyCancel); bench.Host(TradeEngine.PlayerCancel); bench.Run(90);
+    Check(!bench.Engine.Declining && bench.Sent[^1] == (TradeEngine.Ready, 1), "ReadyCancel from the leader keeps the offer");
+
+    bench.Engine.Decline(); bench.Run(40);
+    Check(bench.Engine.Declining && bench.Sent[^1] == (TradeEngine.Cancel, 0), "Decline sends Cancel over a standing Ready");
+    bench.Host(TradeEngine.Cancel); bench.Host(TradeEngine.BothCancel); bench.Run(5);
+    Check(bench.Engine.State == 6, "BothCancel ends the menu");
+
+    var race = new EngineBench(mons, 0, hostMon, hostOther);
+    race.Engine.Decline(); race.Host(TradeEngine.SetMons, 1); race.Run(30);
+    Check(race.Sent.Contains((TradeEngine.ReadyCancel, 0)) && !race.Sent.Contains((TradeEngine.InitBlock, 0)),
+        "Decline racing SetMons answers ReadyCancel");
+
+    // Live offer
+    var live = new EngineBench(mons, 1, hostMon, hostOther);
+    Check(!live.Engine.Offer(3) && live.Engine.Offered == 1, "Empty slot is not offered");
+    Check(live.Engine.Offer(0), "Offer accepts an occupied slot"); live.Run(40);
+    Check(live.Sent.SequenceEqual([(TradeEngine.Ready, 1), (TradeEngine.Ready, 0)]), "Offer re-sends Ready with the new cursor");
+    live.Host(TradeEngine.SetMons, 0); live.Run(30);
+    Check(live.Engine.Offer(1), "Offer during confirmation is accepted"); live.Run(40);
+    Check(live.Sent[^1] == (TradeEngine.InitBlock, 0), "Offer during confirmation sends nothing");
+    live.Host(TradeEngine.InitBlock); live.Host(TradeEngine.Start); live.Run(live.Engine.AnimationFrames + 40);
+    live.Host(TradeEngine.ReadyFinish); live.Host(TradeEngine.ConfirmFinish); live.Run(5);
+    Check(live.Received.SequenceEqual([("HOSTMON", 0)]) && live.Engine.Offered == 1, "Commit uses the sent cursor; the later choice stays offered");
+
+    // Trade and trade back in one connection
+    var back = new EngineBench(mons, 1, hostMon, hostOther);
+    back.Trade(0);
+    Check(back.Received.SequenceEqual([("HOSTMON", 1)]) && back.Engine.Commits == 1, "Commit stores the received Pokémon in the traded slot");
+    byte[] given = TradeEngine.ToWire(mons[1]!);
+    back.Open(given, hostOther);
+    Check(back.Blocks.Last(b => b.Length == 204 && b.Take(200).Any(x => x != 0)).AsSpan(100, 100).SequenceEqual(hostMon),
+        "Re-sent party carries the received Pokémon");
+    Check(!back.Engine.Declining && back.Sent[^1] == (TradeEngine.Ready, 1) && !back.Sent.Contains((TradeEngine.Cancel, 0)),
+        "After a trade the menu opens with Ready, not Cancel");
+    back.Trade(0);
+    Check(back.Received.Count == 2 && back.Received[1] == (TradeEngine.Parse(mons[1]!).Nickname, 1) && back.Engine.Commits == 2,
+        "Second trade in one connection commits");
+    back.Open(hostMon, hostOther);
+    back.Host(TradeEngine.Cancel); back.Host(TradeEngine.PlayerCancel); back.Run(90);
+    Check(back.Engine.Declining && back.Sent[^1] == (TradeEngine.Cancel, 0), "Leader Cancel after trades is answered with Cancel");
+    back.Host(TradeEngine.Cancel); back.Host(TradeEngine.BothCancel); back.Run(5);
+    Check(back.Engine.State == 6, "BothCancel after trades ends the menu");
+
+    var again = new EngineBench(mons, 1, hostMon, hostOther);
+    again.Trade(1); again.Open(hostMon, given);
+    Check(again.Sent[^1] == (TradeEngine.Ready, 1), "After a trade the traded slot stays offered");
+    Check(again.Engine.Offer(0), "Offer after a trade is accepted"); again.Run(40);
+    Check(!again.Engine.Declining && again.Sent[^1] == (TradeEngine.Ready, 0), "Offer after a trade re-sends Ready");
+    again.Engine.Decline(); again.Run(40);
+    Check(again.Sent[^1] == (TradeEngine.Cancel, 0), "Decline after a trade sends Cancel");
+}
+
+// ProgramDirectory
+Check(ProgramDirectory.Find("/opt/frlg/", null, null) == "/opt/frlg/", "Program directory without AppImage");
+Check(ProgramDirectory.Find("/tmp/.mount_FRLGab/usr/bin/", "/home/ash/Apps/FRLG.AppImage", "/tmp/.mount_FRLGab") == "/home/ash/Apps",
+    "Program directory of an AppImage is the AppImage's folder");
+Check(ProgramDirectory.Find("/opt/frlg/", "/home/ash/Apps/Other.AppImage", "/tmp/.mount_Otherx") == "/opt/frlg/",
+    "Inherited AppImage variables are ignored");
+
+// Handshake against FakeBoard
+{
+    var board = new FakeBoard { BootMs = 1300 };
+    using var device = new SerialDevice(board, CancellationToken.None);
+    device.Handshake();
+    Check(device.Model == "esp32s3" && device.Firmware == "2.0.0", "Handshake retries while the board boots");
+    Check(board.Commands.SequenceEqual(["LDN_HELLO", "LDN_BEGIN", "LDN_INFO", "LDN_BRIDGE_STOP"]) && !board.BridgeRunning,
+        "Handshake stops the firmware bridge");
+    device.Command("LDN_SCAN 1");
+    device.Stop();
+    Check(board.BridgeRunning && board.Commands.TakeLast(2).SequenceEqual(["LDN_STOP", "LDN_BRIDGE_START"]), "Stop restarts the firmware bridge");
+}
+{
+    using var device = new SerialDevice(new FakeBoard { Version = null }, CancellationToken.None);
+    try { device.Handshake(); throw new Exception("Pre-2.0 firmware accepted"); }
+    catch (ConnectionException e) when (e.Message.Contains("before 2.0")) { checks++; }
+}
+{
+    using var device = new SerialDevice(new FakeBoard { BootMs = 60000 }, CancellationToken.None);
+    var waited = System.Diagnostics.Stopwatch.StartNew();
+    try { device.Handshake(); throw new Exception("Silent port accepted"); }
+    catch (ConnectionException e) when (e.Message.Contains("No bridge firmware answered")) { checks++; }
+    Check(waited.Elapsed.TotalSeconds is > 7 and < 12, "Silent port times out after about 8 s");
+}
 Console.WriteLine($"PASS {checks} checks");

@@ -3,14 +3,14 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>FRLG Link Bridge</title>
+    <title>GB-Link Switch LDN</title>
     <meta name="description" content="Set up an ESP32 and a GB-Link adapter so a real Game Boy Advance can trade and battle with Pokémon FireRed and LeafGreen on Nintendo Switch.">
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%237c8cff'/%3E%3Cpath d='M9 12h14M9 20h14M12 9l-3 3 3 3M20 17l3 3-3 3' stroke='%230b0d18' stroke-width='2.4' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
     <header class="masthead">
-        <h1>FRLG Link Bridge</h1>
+        <h1>GB-Link Switch LDN</h1>
         <p>Trade and battle between a real Game Boy Advance and Pokémon FireRed / LeafGreen on Nintendo Switch. This page sets up the two boards that make it possible, and can carry the link between them.</p>
     </header>
 
@@ -165,7 +165,7 @@
                     <li>On the Game Boy Advance, with the adapter plugged in, choose the same activity and join a group. The Switch player is listed after a few seconds.</li>
                     <li>When you leave the room, the ESP32 board restarts and is ready for the next one about ten seconds later.</li>
                 </ol>
-                <p class="fine">Trades and single battles work. Trading without a Game Boy Advance (the page standing in for the GBA) is not part of this page yet; the desktop app in <code>host/</code> still does that.</p>
+                <p class="fine">Trades and single battles work. Trading without a Game Boy Advance (the page standing in for the GBA) is not part of this page yet; the desktop app in <code>host/</code> does that, on Windows and Linux, with the same firmware.</p>
             </details>
         </section>
 
@@ -182,7 +182,7 @@
     </main>
 
     <footer>
-        <p>Runs entirely in your browser: Chrome, Edge or another Chromium browser on a computer. <a href="https://github.com/starlarkus/frlg-ldn-trade-esp32">Source and documentation</a> · AGPL-3.0. Flashing uses <a href="https://github.com/espressif/esptool-js">esptool-js</a> (Apache-2.0) and <a href="https://github.com/picoflash/picoflash">picoflash</a> (MIT). Not affiliated with Nintendo or The Pokémon Company.</p>
+        <p>Runs entirely in your browser: Chrome, Edge or another Chromium browser on a computer. <a href="https://github.com/GB-Link/GB-Link-Switch-LDN">Source and documentation</a> · AGPL-3.0. Flashing uses <a href="https://github.com/espressif/esptool-js">esptool-js</a> (Apache-2.0) and <a href="https://github.com/picoflash/picoflash">picoflash</a> (MIT). Not affiliated with Nintendo or The Pokémon Company.</p>
     </footer>
 
     <script type="module" src="js/app.js"></script>
