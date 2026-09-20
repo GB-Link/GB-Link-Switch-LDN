@@ -215,3 +215,42 @@ sequenceDiagram
 
 Automated reference: the C# tests in `host/tests`. `host/tests/fixtures/vectors.json` provides fixed protocol
 vectors with synthetic keys; real captures and the optional trade replay stay in `local/` only.
+
+## Version 2 additions: the session on the chip
+
+The bridge firmware under `firmware/` keeps this framing and adds a second way of
+working. The device holds the keys (provisioned once with `LDN_KEY`, stored in NVS)
+and runs LDN authentication, Pia and the link-layer shim itself, so a host no longer
+handles key material or Wi-Fi traffic. What the host can supply instead is the GBA
+side of the link.
+
+| Type | Direction | payload |
+| --- | --- | --- |
+| 6 | device -> host | bytes for the adapter: whole GB-Link frames |
+| 7 | host -> device | bytes from the adapter: a GB-Link frame stream |
+
+A GB-Link frame is `0x47 0x42 | channel:1 | length:2 LE | payload`, the framing the
+GB-Link uses on its serial transports; channel 0 is commands, 1 data, 2 status. Kind 6
+carries one whole frame. Kind 7 is a byte stream and need not be frame-aligned. Neither
+is acknowledged, and kind 7 is accepted without a session check.
+
+Where those bytes go depends on `LDN_ADAPTER`:
+
+| Command | Effect |
+| --- | --- |
+| `LDN_ADAPTER uart` | Default. The adapter is a GB-Link wired to the board's UART. Kinds 6 and 7 then relay that UART to the host while the on-chip bridge is stopped. |
+| `LDN_ADAPTER host` | The host stands in for the adapter. Everything the bridge would send to the GB-Link arrives as kind 6, starting with its SetMode request (`47 42 00 03 00 00 07 00`), and kind 7 is fed to the bridge as if it came from the GB-Link. Binary mode only; `LDN_ERROR NOT_BINARY` otherwise, and `LDN_ERROR NO_MEMORY` if the queue for those frames, which is made on the first request, cannot be. |
+| `LDN_ADAPTER` | Reports the current setting. |
+
+With the adapter on the host port a client can pipe the frames to a GB-Link it holds
+over USB (`firmware/tools/host_bridge.py` does exactly this), or answer them itself to
+play the GBA. The setting is not kept across a restart, and the firmware restarts
+itself when a session ends, so a client re-establishes binary mode and the port after
+the device comes back.
+
+Other additions: `LDN_INFO` reports `LDN_INFO frlg-ldn-bridge <version> chip=<target>
+transport=<name>` with no side effects, which text `LDN_HELLO` does not (it switches
+the console to binary mode); `LDN_RF` reports the signal strength of the room's
+advertisements since the last call; `LDN_ANTENNA 0|1` selects the onboard or external
+antenna on boards with a switch. In binary mode the bridge's own log lines arrive as
+type 3 messages.
