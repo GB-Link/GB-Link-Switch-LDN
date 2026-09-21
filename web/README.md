@@ -1,8 +1,14 @@
 # Web client
 
-One page that sets up both boards and, if you want, carries the link between them. It
-is a static site with no build step and no server side: everything runs in the browser
-over Web Serial and WebUSB.
+One page that sets up the boards and, if you want, carries the link between them or
+plays the second game itself. It is a static site with no build step and no server side:
+everything runs in the browser over Web Serial and WebUSB.
+
+The page has two trees, chosen at the top and remembered. `#gba` and `#switch` in the
+address open one directly.
+
+**GBA to Switch** – a real GBA joins the Switch's room. Needs the ESP32 board and a
+GB-Link adapter.
 
 1. **ESP32 board** – connects to the ESP32, installs or updates its firmware (the chip
    is detected, so the same button serves the ESP32-S3, C6, C3 and the original ESP32),
@@ -13,14 +19,53 @@ over Web Serial and WebUSB.
    checks the wiring for standalone use, or stands in for the wires: with both boards
    on USB, the page passes the adapter's traffic between them.
 
+**Just the Switch** – the page plays the second game itself, in place of the GBA. Needs
+only the ESP32 board.
+
+1. **ESP32 board** – the same card, set up the same way.
+2. **Trade** – with one of two things:
+   - *Wonder Trade*: a trade with the online pool of <https://pokemon.gblink.io>
+     (<https://pokemon.gblink.io/pool> shows what is in it), on the same server
+     (`wss://pokemon-gb-online-trades.herokuapp.com`, path `/pool3`; the address can be
+     changed under *More options*). The pool offers one of its Pokémon, and the one the
+     Switch gives for it goes into the pool. The pool is reached when you connect, but
+     no Pokémon is taken from it until the player on the Switch has let the page into
+     the group, because a Pokémon on offer to one connection is kept from everyone else.
+     It comes into view on the page together with the Switch's team, as it does on the
+     Switch. The pool is asked before the trade is confirmed, so a Pokémon it will not
+     take never leaves the Switch.
+   - *PK3 files*: a party of your own, kept in the browser. Pokémon go in and out as
+     `.pk3` files (↓ and ↑ on each one, between visits), and what the Switch sends takes
+     the place of what you gave. `assets/party.json` here is the party a first visit
+     starts from, a copy of the one in the repository root; replace both before
+     publishing if you would rather not ship your own Pokémon.
+
+   Click one of your Pokémon to offer it, as the player on the Switch chooses one there;
+   nothing is offered until you do, because the game's leader waits for both players and
+   will not let its own player leave the menu while a partner's offer is standing. The
+   leader also never sends its own player's pick (only its cancel goes out on the link),
+   it judges that cancel the moment its own broadcast completes, and an offer that is in
+   cannot be taken back. So the page cannot wait for a pick and answer it: an offer made
+   ahead of the pick costs the Switch a second CANCEL, and one held back makes the pick
+   wait for it. The pool's Pokémon is therefore held back too: the page waits for *Accept
+   trade* or *Cancel trade* under it, pressed before or after choosing on the Switch, and
+   neither can be changed once the trade is under way. CANCEL in
+   the trade menu brings both players back to the room, and sitting down at the table
+   again opens a new menu: with the pool, that is how to get a different Pokémon. Keep
+   the tab in view: a browser slows a tab it is not showing, and a game that stops
+   answering is dropped. The pictures come from
+   [PokeAPI](https://github.com/PokeAPI/sprites).
+
 The first two cards each show one line of status and at most one button, for whatever
 comes next on that board: connect, install firmware, add keys. A board that is ready
 shrinks to a single line. Everything else (installing again, erasing, a `.uf2` of your
 own, connecting over serial, disconnecting) is under *More options*.
 
-Playing without a Game Boy Advance, with the computer standing in for the GBA, is not
-part of this page yet. The desktop and console hosts in `host/` do that, on the same
-firmware.
+**The board does the wireless, trading included.** It finds the room, joins it,
+decrypts everything and runs the session, exactly as it does for a real Game Boy
+Advance. The page asks to stand in for the adapter (`LDN_ADAPTER host`) and answers the
+plain frames the board passes on. So the page holds no key, decrypts nothing, and needs
+no firmware beyond the 2.0 the rest of the page already installs.
 
 ## Running it
 
@@ -141,15 +186,58 @@ The offsets come from each build's `flasher_args.json`.
 | `js/flash-pico.js` | installing the adapter firmware |
 | `js/keys.js` | picking the four values out of `prod.keys` |
 | `js/manifest.js` | the bundled firmware list |
-| `js/app.js` | the page: each card is drawn from one view of its state (status line, hint, one button) |
+| `js/app.js` | the page: the two trees, and each card drawn from one view of its state (status line, hint, one button) |
+| `js/trade/` | trading without a Game Boy Advance: `adapter.js` (the wireless adapter's frames, as the board relays them), `link.js` (joining the room and answering each frame), `rfu.js` and `engine.js` (the games' link protocol and the trade itself), `pk3.js` with the generated `pk3-data.js` (Pokémon data), `pool.js` (the trade pool's server), `party.js`, `sprites.js`, `session.js` (a visit to the room, with either) and `bytes.js` |
 | `js/launcher-return.js` | the "Launcher" button shown when the page is opened from the [GB-Link launcher](https://launcher.gblink.io) (`?from=gblink-launcher`); the same file the other GB-Link web clients carry |
 
 `firmware/tools/host_bridge.py` does the same relay from a terminal and is the reference
-the JavaScript was checked against. `node web/tests/run.mjs` tests the protocol code
-without hardware: the framing against vectors from that Python (`tests/make_vectors.py`
-regenerates them), and the session logic against stand-ins for the firmware's console:
+the JavaScript was checked against. Three suites run without hardware:
+
+```
+node web/tests/run.mjs            # framing, and a session against a stand-in console
+node web/tests/trade.mjs          # the trade code against the reference host
+node web/tests/session-test.mjs   # a whole trade against a stand-in Switch
+```
+
+`run.mjs` checks the framing against vectors from that Python (`tests/make_vectors.py`
+regenerates them) and the session logic against stand-ins for the firmware's console:
 restarts, a board behind a USB-UART chip whose reset hangs off DTR and RTS, and what a
 blank, foreign or crashing chip prints.
+
+`trade.mjs` checks the trading code against the C# host in `host/`, which has made real
+trades: the Pokémon data against PKHeX through 93 generated Pokémon, the adapter's
+frames through a torn and padded stream, and the trade engine by replaying recorded
+scenarios of the host's own engine call by call. It also checks the trade pool's client
+against a stand-in for the pool's server (`tests/fake-pool.mjs`, which follows
+`serving.py` of [PokemonGB_Online_Trades_and_Battles](https://github.com/Lorenzooone/PokemonGB_Online_Trades_and_Battles)
+message for message).
+`dotnet run --project host/tests -c Release -- --web-vectors` regenerates
+`web/tests/trade-vectors.json` and `web/js/trade/pk3-data.js` from that host.
+
+`session-test.mjs` runs the page's session code against a stand-in board that relays the
+Switch's game (`tests/fake-port.mjs`, with the leader's side in `tests/fake-switch.mjs`):
+one trade, two trades in a row, leaving without trading, changing which Pokémon is
+offered while connected, and leaving the menu and sitting down again. With the stand-in
+pool it runs a pool trade, the different Pokémon that follows a trade or a return to the
+table, a Pokémon taken from the pool only once the Switch has let the page in, an offer
+held back until the page makes it, an empty pool, mail travelling both ways, a Pokémon the pool refuses, and a swap the pool never confirms. It goes through the same `EspDevice` and framing the page uses.
+That stand-in board also runs in the browser, so the page itself can be driven without
+hardware:
+
+```js
+const { FakeBoardPort, installFakeSerial } = await import('/tests/fake-port.mjs');
+const party = (await (await fetch('/tests/trade-vectors.json')).json()).engine.hostParty
+    .map((hex) => Uint8Array.from(hex.match(/../g), (b) => parseInt(b, 16)));
+const port = new FakeBoardPort({ hostParty: party });
+port.onLinkUp = (leader) => leader.greet().sit().open(party);
+installFakeSerial(port);
+```
+
+then use the page as usual: connect in step 1, then trade under *Just the Switch*.
+`port.leader` takes the Switch's next moves, such as `command(0xdddd, 0)` to choose its
+first Pokémon (the values are `LINK` in `js/trade/engine.js`), and `port.leaveRoom()`
+ends the visit. The stand-in keeps its pace in a tab that is not on show, which the page
+it drives does not.
 
 ## Third-party code
 

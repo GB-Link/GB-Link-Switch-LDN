@@ -212,7 +212,12 @@ export class EspDevice extends EventTarget {
                     if (BOOT_SIGNS.test(this.bootText.slice(-(text.length + 32)))) this.bootSignAt = Date.now();
                 }
                 this.watchForReboot(value);
-                for (const frame of this.decoder.push(value)) this.handleFrame(frame);
+                // A frame this page mishandles is not the port failing: keep reading, or
+                // the board would look unplugged.
+                for (const frame of this.decoder.push(value)) {
+                    try { this.handleFrame(frame); }
+                    catch (error) { this.dispatchEvent(new CustomEvent('log', { detail: `page: ${error?.message ?? error}` })); }
+                }
             }
         } catch {
             // The port went away, or close() cancelled the read.

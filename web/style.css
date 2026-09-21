@@ -37,6 +37,23 @@ h3 { margin: 0 0 6px; font-size: 1rem; }
 code { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 0.92em; }
 a { color: var(--accent); }
 
+/* The page's two trees: what is linked with the Switch decides which cards follow. */
+.paths { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr)); gap: 12px; margin-top: 22px; }
+.path {
+    display: grid; gap: 3px; align-content: start; text-align: left;
+    padding: 14px 16px; border-radius: 14px;
+    background: var(--panel); font-weight: 400; color: var(--muted);
+}
+.path strong { color: var(--text); font-size: 1rem; }
+.path span { font-size: 0.88rem; }
+.path .needs {
+    justify-self: start; margin-top: 5px; padding: 1px 9px;
+    border: 1px solid var(--line); border-radius: 99px;
+    font-size: 0.78rem; font-weight: 600; color: var(--text);
+}
+.path[aria-selected="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.path[aria-selected="true"] strong { color: var(--accent); }
+
 .card {
     background: var(--panel);
     border: 1px solid var(--line);
@@ -130,6 +147,12 @@ ol.fine li { margin: 4px 0; }
 .more { margin-top: 16px; }
 .more summary { cursor: pointer; color: var(--muted); font-size: 0.9rem; }
 .more input[type=file] { color: var(--muted); font-size: 0.85rem; max-width: 100%; }
+.more input[type=text] {
+    font: inherit; font-size: 0.85rem; color: var(--text);
+    width: min(100%, 24em); padding: 5px 8px;
+    background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px;
+}
+.more input[type=text]:disabled { opacity: 0.55; }
 
 .session { margin-top: 16px; padding: 14px 16px; background: var(--panel-2); border-radius: 12px; border-left: 3px solid var(--accent); }
 .session.good { border-left-color: var(--good); }
@@ -189,6 +212,58 @@ ol.fine li { margin: 4px 0; }
 
 footer { padding-top: 6px; padding-bottom: 44px; }
 footer p { color: var(--muted); font-size: 0.82rem; }
+
+
+.switcher { display: inline-flex; flex-wrap: wrap; gap: 3px; margin-top: 16px; padding: 3px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 11px; }
+.switcher button { border: 0; background: none; color: var(--muted); padding: 6px 14px; border-radius: 8px; }
+.switcher button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
+#source-note-pool, #source-note-party { margin-top: 8px; }
+
+/* The answer to the trade on the table, under the Pokémon it is about. */
+.answers { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.answers button[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--panel), 0 0 0 4px var(--good); }
+.answers #pool-cancel[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--panel), 0 0 0 4px var(--warn); }
+
+.parties { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr)); gap: 16px; margin-top: 16px; }
+.party h3 { color: var(--muted); font-size: 0.82rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+.party .fine { margin-top: 10px; }
+.kept { margin-top: 18px; }
+.kept h3 { color: var(--warn); font-size: 0.82rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+.kept .fine { margin: 0 0 10px; }
+/* One Pokémon to a row, so a nickname has the column's whole width. Two fit side by
+   side only where the column is wide enough for the names; the zero minimum keeps a
+   long name from widening the grid and pushing the card off the page. */
+.slots { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(190px, 100%), 1fr)); gap: 8px; }
+
+.slot {
+    display: flex; align-items: stretch;
+    min-height: 56px; overflow: hidden;
+    background: var(--panel-2); border: 1px solid var(--line); border-radius: 11px;
+}
+.slot-pick {
+    flex: 1; min-width: 0;
+    display: flex; align-items: center; gap: 9px;
+    padding: 7px 9px; text-align: left;
+    background: none; border: 0; border-radius: 0; color: inherit; font: inherit;
+}
+.slot-tools { display: flex; flex-direction: column; justify-content: center; gap: 3px; padding: 4px 4px 4px 0; }
+.tool {
+    padding: 1px 6px; font-size: 0.82rem; line-height: 1.35;
+    color: var(--muted); background: var(--panel); border-radius: 6px;
+}
+.tool:hover, .tool:focus-visible { color: var(--text); border-color: var(--accent); }
+.glyph { color: var(--text); }
+.slot img { width: 44px; height: 44px; object-fit: contain; image-rendering: pixelated; flex: none; }
+.slot .empty-art { width: 44px; height: 44px; flex: none; border-radius: 9px; border: 1px dashed var(--line); }
+.slot .who { min-width: 0; flex: 1; }
+.slot .name { font-weight: 600; font-size: 0.9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.slot .about { color: var(--muted); font-size: 0.78rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.slot.empty { color: var(--muted); font-weight: 500; }
+.slot.theirs { cursor: default; }
+.slot.offered { border-color: var(--warn); box-shadow: inset 0 0 0 1px var(--warn); }
+.slot.chosen { border-color: var(--accent); }
+.slot .shiny { color: var(--warn); }
+.slot.drop-target { border-color: var(--accent); border-style: dashed; }
 
 [hidden] { display: none !important; }
 

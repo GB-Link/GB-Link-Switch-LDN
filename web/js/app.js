@@ -1,12 +1,20 @@
-// The page: three steps (ESP32 board, adapter, play) over the device modules. Each of
-// the first two cards is drawn from one view of its state: a line of status, perhaps a
-// hint, and at most one thing to press. Everything rarely needed sits under a fold.
+// The page: the ESP32 board first, then one of two trees over the device modules. A Game
+// Boy Advance linked with the Switch takes the adapter and the play card; the Switch on
+// its own takes the trade card. The board's card and the adapter's are each drawn from
+// one view of their state: a line of status, perhaps a hint, and at most one thing to
+// press. Everything rarely needed sits under a fold.
 
 import { EspDevice, ESP_FILTERS, FAST_BAUD, reopenPort, sleep } from './esp.js';
 import { GbLinkSerial, GbLinkUsb, BOOTROM_VENDOR_ID, GBLINK_VENDOR_ID } from './gblink.js';
 import { Bridge } from './bridge.js';
 import { parseProdKeys } from './keys.js';
 import { loadManifest, fetchBytes } from './manifest.js';
+import { fromHex, toHex } from './trade/bytes.js';
+import { Party, describe as describeMon } from './trade/party.js';
+import { parse as parsePk3 } from './trade/pk3.js';
+import { spriteUrl, spriteFallbackUrl } from './trade/sprites.js';
+import { CancelledError, TradeSession } from './trade/session.js';
+import { POOL_SERVER, PoolClient } from './trade/pool.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -26,6 +34,7 @@ const POLL_MS = 5000;
 
 const state = {
     manifest: null,
+    path: 'gba',            // which tree is on show: gba | switch
 
     esp: null,
     espPort: null,          // a port that was picked but would not attach
@@ -50,6 +59,25 @@ const state = {
     install: null,          // { step, manual, progress, image } while firmware goes on
     customUf2: null,
     uf2Note: null,
+
+    source: 'pool',         // what the trade card offers: pool | party
+    poolServer: POOL_SERVER,
+    poolMon: null,          // what the pool is offering, while connected
+    menuOpen: false,
+    trading: false,         // both sides have confirmed, and the trade is under way
+    kept: [],               // what the Switch gave in swaps the pool did not confirm
+    party: new Party(),
+    partyNote: '',
+    pickerSlot: 0,
+    trade: null,            // the session while a trade is running
+    tradeStop: null,        // its AbortController
+    tradePhase: '',
+    tradeTone: '',
+    tradeDeclining: false,
+    trades: 0,
+    offered: -1,            // the slot this page has offered, while connected
+    hiddenAt: 0,
+    opponent: null,         // { name, party: [six or null] }
 
     resetLoop: false,       // the adapter reports the game resetting it over and over
     bridge: null,
@@ -497,7 +525,7 @@ function keysLine() {
 
 async function pollSession() {
     const esp = state.esp;
-    if (!esp?.attached || state.espPhase !== 'idle') return;
+    if (!esp?.attached || state.espPhase !== 'idle' || state.trade) return;
     try {
         state.session = await esp.bridgeStatus();
         if (state.polls++ % 3 === 0) {
@@ -873,6 +901,7 @@ async function onAdapterFile(file) {
 // ---------------------------------------------------------------- play
 
 function bridgeBlocker() {
+    if (state.trade) return 'This page is trading with the Switch itself. Disconnect there first.';
     if (!state.esp?.attached) return 'Connect the ESP32 board in step 1.';
     if (!state.adapter) return 'Connect the adapter in step 2.';
     if (state.esp.info?.transport === 'UART' && state.esp.baudRate < FAST_BAUD) return 'This board’s firmware runs its console at 115200 baud, which cannot carry the link. Update it in step 1.';
@@ -954,6 +983,438 @@ async function onWiringCheck() {
     }
 }
 
+// ---------------------------------------------------------------- the page's two trees
+
+// A Game Boy Advance linked with the Switch takes the adapter and the play card; the
+// Switch on its own takes the trade card. The board is set up the same way for both.
+const PATHS = ['gba', 'switch'];
+const PATH_STORE = 'gblink-switch-path';
+
+function remembered(key) {
+    try { return localStorage.getItem(key); } catch { return null; }
+}
+
+function remember(key, value) {
+    try {
+        if (value === null) localStorage.removeItem(key);
+        else localStorage.setItem(key, value);
+    } catch {}
+}
+
+function pathBusy() {
+    return Boolean(state.bridge || state.trade);
+}
+
+function choosePath(path, { keep = true } = {}) {
+    if (!PATHS.includes(path) || (path !== state.path && pathBusy())) return;
+    state.path = path;
+    if (keep) {
+        remember(PATH_STORE, path);
+        history.replaceState(null, '', `${location.pathname}${location.search}#${path}`);
+    }
+    render();
+}
+
+function renderPaths() {
+    for (const tab of $('paths').children) {
+        const chosen = tab.dataset.path === state.path;
+        tab.setAttribute('aria-selected', String(chosen));
+        tab.disabled = !chosen && pathBusy();
+        tab.title = tab.disabled ? (state.trade ? 'Disconnect from the Switch first.' : 'Stop carrying the link first.') : '';
+    }
+    for (const card of document.querySelectorAll('main > [data-path]')) card.hidden = card.dataset.path !== state.path;
+}
+
+// ---------------------------------------------------------------- trading from here
+
+const SOURCE_STORE = 'gblink-switch-source';
+const SERVER_STORE = 'gblink-switch-pool-server';
+const KEPT_STORE = 'gblink-switch-kept';
+const SOURCES = ['pool', 'party'];
+
+const pooling = () => state.source === 'pool';
+
+// The board does the wireless; this card only needs it ready and something to trade.
+function tradeBlocker() {
+    if (!state.esp) return 'Connect the ESP32 board in step 1 first.';
+    if (!state.esp.info) return 'Install the firmware in step 1 first.';
+    if (!state.keys?.complete) return 'The board needs its keys before it can read the Switch\'s wireless.';
+    if (state.bridge) return 'This page is carrying the link for a Game Boy Advance. Stop that first.';
+    if (pooling()) return poolServer() ? null : 'The trade pool server\'s address has to start with wss:// or ws://.';
+    if (!state.party.canTrade) return 'Two Pokémon are needed: one to offer and one to keep.';
+    return null;
+}
+
+function poolServer() {
+    const address = state.poolServer.trim();
+    return /^wss?:\/\/\S+$/.test(address) ? address : null;
+}
+
+// tools: [act, glyph, what it does to this Pokémon] for the buttons beside each one.
+function drawSlots(id, mons, { pick = false, marked = -1, mark = 'chosen', tools = [], empty = '–' } = {}) {
+    const box = $(id);
+    box.replaceChildren();
+    mons.forEach((pk, index) => {
+        const slot = document.createElement('div');
+        slot.className = `slot${pick ? '' : ' theirs'}${pk ? '' : ' empty'}`;
+        slot.dataset.slot = String(index);
+        if (index === marked) slot.classList.add(mark);
+        const face = document.createElement(pick ? 'button' : 'div');
+        face.className = 'slot-pick';
+        if (pick) { face.type = 'button'; face.dataset.act = 'pick'; }
+        if (pk) {
+            const about = describeMon(pk);
+            const image = document.createElement('img');
+            image.alt = about.kind;
+            image.loading = 'lazy';
+            image.src = spriteUrl(pk) ?? '';
+            image.addEventListener('error', () => {
+                const fallback = spriteFallbackUrl(pk);
+                if (fallback && image.src !== fallback) image.src = fallback;
+                else image.replaceWith(Object.assign(document.createElement('div'), { className: 'empty-art' }));
+            }, { once: true });
+            const who = document.createElement('div');
+            who.className = 'who';
+            who.append(text('div', 'name', about.name));
+            const line = text('div', 'about', `${about.kind}${about.level ? ` · ${about.level}` : ''}${about.gender ? ` ${about.gender}` : ''}`);
+            if (about.shiny) line.append(text('span', 'shiny', ' ★'));
+            who.append(line);
+            face.append(image, who);
+        } else {
+            face.append(text('div', 'empty-art', ''), text('div', 'name', empty));
+        }
+        slot.append(face);
+        if (pk && tools.length) slot.append(slotTools(tools, describeMon(pk).name));
+        box.append(slot);
+    });
+}
+
+// Saving and replacing sit on the Pokémon itself, so neither changes what is on offer.
+function slotTools(tools, name) {
+    const box = document.createElement('div');
+    box.className = 'slot-tools';
+    for (const [act, glyph, what, disabled] of tools) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'tool';
+        button.dataset.act = act;
+        button.textContent = glyph;
+        button.disabled = Boolean(disabled);
+        button.title = disabled || what.replace('%', name);
+        button.setAttribute('aria-label', what.replace('%', name));
+        box.append(button);
+    }
+    return box;
+}
+
+function text(tag, className, content) {
+    const node = document.createElement(tag);
+    node.className = className;
+    node.textContent = content;
+    return node;
+}
+
+function renderTrade() {
+    const running = Boolean(state.trade);
+    const blocker = tradeBlocker();
+    const pool = pooling();
+    for (const button of $('trade-source').children) {
+        button.setAttribute('aria-pressed', String(button.dataset.source === state.source));
+        button.disabled = running;
+    }
+    $('source-note-pool').hidden = !pool;
+    $('source-note-party').hidden = pool;
+
+    drawSlots('their-slots', state.opponent?.party ?? [null, null, null, null, null, null]);
+    $('their-name').textContent = state.opponent?.name ?? 'The Switch';
+    $('our-name').textContent = pool ? 'The pool' : 'Yours';
+    if (pool) {
+        // The pool's Pokémon comes into view with the Switch's team, as it does on the Switch.
+        drawSlots('our-slots', [state.opponent ? state.poolMon : null], { marked: state.offered === 0 ? 0 : -1, mark: 'offered', empty: 'Shown with the Switch\'s team' });
+    } else {
+        // The party is what the Switch was shown, so it changes only between visits.
+        const locked = running ? 'Disconnect to put a different Pokémon here.' : '';
+        drawSlots('our-slots', state.party.slots, {
+            pick: true, empty: 'Empty',
+            marked: state.party.selected, mark: running && state.offered === state.party.selected ? 'offered' : 'chosen',
+            tools: [['save', '↓', 'Save % as a .pk3 file'], ['swap', '↑', 'Replace % from a .pk3 file', locked]],
+        });
+    }
+    $('party-note').hidden = $('party-board').hidden = $('party-fine').hidden = $('party-options').hidden = pool;
+    $('pool-note').hidden = $('pool-options').hidden = !pool;
+    $('kept').hidden = state.kept.length === 0;
+    drawSlots('kept-slots', state.kept, { tools: [['save', '↓', 'Save % as a .pk3 file'], ['forget', '×', 'Remove % from this list']] });
+
+    // What happened last time stays on the card until something is in the way of the next.
+    const idle = 'Create a Trade Center room on the Switch, then connect.';
+    const status = running ? state.tradePhase : blocker ?? (state.tradePhase || idle);
+    setLine('trade-status', status, running ? state.tradeTone : blocker ? 'warn' : state.tradeTone);
+    $('trade-hint').textContent = pool ? '' : state.partyNote;
+    $('trade-dot').className = `dot ${running ? state.tradeTone || 'busy' : blocker ? '' : 'good'}`.trim();
+    $('trade-connect').hidden = running;
+    $('trade-connect').disabled = Boolean(blocker);
+    // With the pool the page waits for one of two answers under the Pokémon they are
+    // about, and the Switch can leave the menu with a single cancel until one is given.
+    // Neither can be changed once the trade is under way.
+    const answering = running && pool && Boolean(state.opponent && state.poolMon);
+    $('pool-answers').hidden = !answering;
+    $('pool-accept').setAttribute('aria-pressed', String(state.offered === 0));
+    $('pool-cancel').setAttribute('aria-pressed', String(state.tradeDeclining));
+    $('pool-accept').disabled = $('pool-cancel').disabled = !state.menuOpen || state.trading;
+    $('trade-decline').hidden = !running || pool || state.tradeDeclining || !state.opponent;
+    $('trade-decline').disabled = state.trading;
+    $('trade-stop').hidden = !running;
+    for (const id of ['trade-clear', 'trade-reset']) $(id).disabled = running;
+    const server = $('pool-server');
+    if (document.activeElement !== server) server.value = state.poolServer;
+    server.disabled = running;
+    $('pool-server-reset').hidden = running || state.poolServer === POOL_SERVER;
+}
+
+function chooseSource(source) {
+    if (state.trade || !SOURCES.includes(source) || source === state.source) return;
+    state.source = source;
+    state.tradePhase = '';
+    state.tradeTone = '';
+    remember(SOURCE_STORE, source);
+    renderTrade();
+}
+
+function setPoolServer(address) {
+    state.poolServer = address.trim() || POOL_SERVER;
+    remember(SERVER_STORE, state.poolServer === POOL_SERVER ? null : state.poolServer);
+    renderTrade();
+}
+
+async function onTradeConnect() {
+    if (state.trade || tradeBlocker()) return;
+    const pool = pooling();
+    const controller = new AbortController();
+    state.tradeStop = controller;
+    state.tradePhase = 'Asking the board for its link to the adapter';
+    state.tradeTone = '';
+    state.tradeDeclining = false;
+    state.opponent = null;
+    state.poolMon = null;
+    state.menuOpen = false;
+    state.trading = false;
+    state.partyNote = '';
+    state.trades = 0;
+    state.offered = -1;
+    clearInterval(state.pollTimer);
+    const session = new TradeSession({
+        device: state.esp,
+        party: pool ? null : state.party.export(),
+        selected: state.party.selected,
+        pool: pool ? new PoolClient(poolServer()) : null,
+        emit: onTradeEvent,
+    });
+    state.trade = session;
+    render();
+    try {
+        await session.run(controller.signal);
+        const count = state.trades === 1 ? 'One Pokémon' : `${state.trades} Pokémon`;
+        state.tradePhase = state.trades === 0 ? 'Finished without trading.' : pool ? `Finished. ${count} went to the Switch from the pool.` : `Finished. ${count} came across.`;
+        state.tradeTone = state.trades > 0 ? 'good' : '';
+    } catch (error) {
+        const stopped = error instanceof CancelledError;
+        const gone = !state.esp;
+        state.tradePhase = stopped ? 'Disconnected.' : gone ? 'The ESP32 board stopped answering during the trade.' : describe(error);
+        state.tradeTone = stopped ? '' : 'bad';
+        if (!stopped) log('trade', describe(error));
+    } finally {
+        // The board may have gone away during the session, which is what ended it.
+        state.trade = null;
+        state.tradeStop = null;
+        state.opponent = null;
+        state.poolMon = null;
+        state.menuOpen = false;
+        state.trading = false;
+        state.tradeDeclining = false;
+        state.offered = -1;
+        clearInterval(state.pollTimer);
+        state.pollTimer = setInterval(pollSession, POLL_MS);
+        pollSoon();
+        render();
+    }
+}
+
+function readMon(bytes) {
+    try { return bytes ? parsePk3(bytes) : null; } catch { return null; }
+}
+
+function onTradeEvent(event) {
+    const pool = pooling();
+    switch (event.event) {
+        case 'phase':
+            state.tradePhase = event.message;
+            state.tradeTone = event.tone || (state.opponent ? 'good' : '');
+            break;
+        case 'log':
+            log('trade', event.message);
+            return;
+        case 'opponent_party':
+            state.opponent = { name: event.name, party: event.party.map(readMon) };
+            state.tradeTone = 'good';
+            break;
+        case 'menu': {
+            // Nothing is on offer until the player here says so, which is what lets the
+            // Switch leave the menu with a single cancel.
+            state.menuOpen = true;
+            const name = state.poolMon ? describeMon(state.poolMon).name : 'the pool\'s Pokémon';
+            state.tradePhase = pool
+                ? `The trade menu is open. Press Accept trade for ${name}; for a different one, CANCEL on the Switch and sit down again.`
+                : `The trade menu is open${state.trades ? ' again' : ''}. Click a Pokémon to offer it.`;
+            state.tradeTone = 'good';
+            break;
+        }
+        case 'offer': {
+            const pk = pool ? state.poolMon : state.party.slots[event.slot];
+            if (event.taken && pk) {
+                state.offered = event.slot;
+                state.tradePhase = pool
+                    ? `Trade accepted. Choose what to give for ${describeMon(pk).name} on the Switch.`
+                    : `Offering ${describeMon(pk).name}. Choose one on the Switch.`;
+                state.tradeTone = 'good';
+            } else if (!state.opponent) {
+                state.tradePhase = 'Sit down at the trade table on the Switch first.';
+            }
+            break;
+        }
+        case 'trading':
+            state.trading = true;
+            state.tradePhase = 'The trade is under way.';
+            state.tradeTone = 'good';
+            break;
+        case 'declining':
+            state.tradeDeclining = event.value;
+            if (event.value) state.offered = -1;
+            break;
+        case 'room':
+            state.menuOpen = state.trading = false;
+            state.opponent = null;
+            state.offered = -1;
+            state.tradeDeclining = false;
+            state.tradePhase = pool
+                ? 'Back in the room. Sit down at the trade table again for a different Pokémon from the pool, or leave the room to finish.'
+                : 'Back in the room. Sit down at the trade table again to trade some more, or leave the room to finish.';
+            state.tradeTone = '';
+            break;
+        case 'received':
+            try {
+                state.menuOpen = state.trading = false;
+                state.party.receive(event.slot, event.pk3);
+                state.trades++;
+                state.offered = -1;
+                // The Switch's party has changed too; it sends the new one once both games have saved.
+                state.opponent = null;
+                state.tradePhase = `Traded. ${describeMon(state.party.slots[event.slot]).name} is now in slot ${event.slot + 1}.`;
+                state.tradeTone = 'good';
+            } catch (error) {
+                state.tradePhase = describe(error);
+                state.tradeTone = 'bad';
+            }
+            break;
+        case 'pool_mon':
+            state.poolMon = readMon(event.pk3);
+            state.offered = -1;
+            break;
+        case 'pool_traded': {
+            const gave = readMon(event.gave), got = readMon(event.got);
+            state.menuOpen = state.trading = false;
+            state.trades++;
+            state.offered = -1;
+            state.poolMon = null;
+            state.opponent = null;
+            const names = `${got ? describeMon(got).name : 'The pool\'s Pokémon'} went to the Switch`;
+            if (event.sealed) {
+                state.tradePhase = `Traded. ${names}, and ${gave ? describeMon(gave).name : 'the Switch\'s'} is in the pool.`;
+                state.tradeTone = 'good';
+            } else {
+                if (gave) keep(gave);
+                state.tradePhase = `${names}, but the pool did not confirm the swap. ${gave ? describeMon(gave).name : 'What the Switch gave'} is kept below instead: save it as a file.`;
+                state.tradeTone = 'warn';
+            }
+            break;
+        }
+        default:
+            break;
+    }
+    renderTrade();
+}
+
+function onSlotClick(event) {
+    const button = event.target.closest('[data-act]');
+    const slot = event.target.closest('.slot');
+    if (!button || !slot || button.disabled) return;
+    const index = Number(slot.dataset.slot);
+    if (pooling()) return;
+    if (button.dataset.act === 'save') { savePk3(state.party.slots[index]); return; }
+    if (button.dataset.act === 'swap') { openPk3Picker(index); return; }
+    if (!state.party.slots[index]) {
+        if (!state.trade) openPk3Picker(index);
+        return;
+    }
+    state.party.select(index);
+    state.partyNote = '';
+    if (state.trade) state.trade.offerSlot(index);
+    renderTrade();
+}
+
+function openPk3Picker(slot = state.party.selected) {
+    if (state.trade) return;
+    state.pickerSlot = slot;
+    $('trade-file').value = '';
+    $('trade-file').click();
+}
+
+async function onPk3File(file, slot = state.pickerSlot) {
+    if (!file || state.trade) return;
+    try {
+        state.party.set(slot, parsePk3(new Uint8Array(await file.arrayBuffer())));
+        state.party.select(slot);
+        state.partyNote = '';
+    } catch (error) {
+        state.partyNote = describe(error);
+    }
+    renderTrade();
+}
+
+function savePk3(pk) {
+    if (!pk) return;
+    const blob = new Blob([pk.export()], { type: 'application/octet-stream' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `${describeMon(pk).name || pk.speciesName}.pk3`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(link.href), 5000);
+}
+
+// What the Switch gave in a swap the pool did not confirm. It belongs to the player, so
+// it stays in this browser until they have saved it.
+function keep(pk) {
+    state.kept.push(pk);
+    storeKept();
+}
+
+function storeKept() {
+    remember(KEPT_STORE, state.kept.length ? JSON.stringify(state.kept.map((pk) => toHex(pk.export()))) : null);
+}
+
+function loadKept() {
+    try { state.kept = JSON.parse(remembered(KEPT_STORE) ?? '[]').map((hex) => parsePk3(fromHex(hex))); }
+    catch { state.kept = []; }
+}
+
+function onKeptClick(event) {
+    const button = event.target.closest('[data-act]');
+    const slot = event.target.closest('.slot');
+    if (!button || !slot) return;
+    const index = Number(slot.dataset.slot);
+    if (button.dataset.act === 'save') savePk3(state.kept[index]);
+    else if (button.dataset.act === 'forget') twice(button, 'Sure?', () => { state.kept.splice(index, 1); storeKept(); renderTrade(); });
+}
+
 // ---------------------------------------------------------------- rendering
 
 let espActions = {};
@@ -976,6 +1437,7 @@ function drawCard(prefix, view) {
 }
 
 function render() {
+    renderPaths();
     const esp = espView();
     espActions = drawCard('esp', esp);
     setProgress('esp-progress', esp.progress ?? null);
@@ -987,6 +1449,8 @@ function render() {
     $('keys-replace').hidden = !state.keys?.complete;
     if (!armed.has($('keys-replace'))) $('keys-replace').textContent = state.replacingKeys ? 'Keep the stored keys' : 'Replace the keys';
     $('keys-erase').hidden = !state.keys || !Object.keys(KEY_NAMES).some((flag) => state.keys[flag]);
+
+    renderTrade();
 
     const adapter = adapterView();
     adapterActions = drawCard('adapter', adapter);
@@ -1044,7 +1508,7 @@ function drawSteps() {
 // ---------------------------------------------------------------- start-up
 
 function wireUp() {
-    for (const id of ['esp-status', 'keys-status', 'adapter-status', 'adapter-file-status', 'bridge-status', 'wiring-status']) $(id).dataset.base = 'status';
+    for (const id of ['esp-status', 'keys-status', 'adapter-status', 'adapter-file-status', 'bridge-status', 'wiring-status', 'trade-status']) $(id).dataset.base = 'status';
 
     $('esp-primary').addEventListener('click', () => espActions.primary?.());
     $('esp-secondary').addEventListener('click', () => espActions.secondary?.());
@@ -1085,6 +1549,44 @@ function wireUp() {
         await dropAdapter({ code: 'gone', text: 'The adapter is restarting in update mode; an RPI-RP2 drive should appear.' });
     });
 
+    $('paths').addEventListener('click', (event) => choosePath(event.target.closest('[data-path]')?.dataset.path));
+    window.addEventListener('hashchange', () => choosePath(location.hash.slice(1), { keep: false }));
+    $('trade-source').addEventListener('click', (event) => chooseSource(event.target.closest('[data-source]')?.dataset.source));
+    $('pool-accept').addEventListener('click', () => { if (pooling() && state.poolMon) state.trade?.offerSlot(0); });
+    $('pool-cancel').addEventListener('click', () => { state.trade?.declineTrade(); state.tradeDeclining = true; renderTrade(); });
+    $('pool-server').addEventListener('change', (event) => setPoolServer(event.target.value));
+    $('pool-server-reset').addEventListener('click', () => setPoolServer(''));
+    $('kept-slots').addEventListener('click', onKeptClick);
+    $('trade-connect').addEventListener('click', onTradeConnect);
+    $('trade-decline').addEventListener('click', () => { state.trade?.declineTrade(); state.tradeDeclining = true; renderTrade(); });
+    $('trade-stop').addEventListener('click', () => state.tradeStop?.abort());
+    $('our-slots').addEventListener('click', onSlotClick);
+    $('trade-clear').addEventListener('click', () => {
+        state.party.set(state.party.selected, null);
+        renderTrade();
+    });
+    $('trade-reset').addEventListener('click', (event) => twice(event.currentTarget, 'Click again to replace your party', async () => {
+        localStorage.removeItem('gblink-switch-party');
+        await state.party.load();
+        state.partyNote = '';
+        renderTrade();
+    }));
+    $('trade-file').addEventListener('change', (event) => onPk3File(event.target.files[0]));
+    $('our-slots').addEventListener('dragover', (event) => {
+        const slot = event.target.closest('.slot');
+        if (!slot || state.trade || pooling()) return;
+        event.preventDefault();
+        slot.classList.add('drop-target');
+    });
+    $('our-slots').addEventListener('dragleave', (event) => event.target.closest('.slot')?.classList.remove('drop-target'));
+    $('our-slots').addEventListener('drop', (event) => {
+        const slot = event.target.closest('.slot');
+        if (!slot || state.trade || pooling()) return;
+        event.preventDefault();
+        slot.classList.remove('drop-target');
+        onPk3File(event.dataTransfer?.files?.[0], Number(slot.dataset.slot));
+    });
+
     $('bridge-start').addEventListener('click', onBridgeStart);
     $('bridge-stop').addEventListener('click', () => stopBridge());
     $('wiring-check').addEventListener('click', onWiringCheck);
@@ -1096,6 +1598,22 @@ function wireUp() {
     });
     $('log-copy').addEventListener('click', () => navigator.clipboard?.writeText(logLines.join('\n')));
 
+    // A tab the browser is not showing has its timers slowed to about one a second,
+    // which is far too slow to hold the Switch's link.
+    document.addEventListener('visibilitychange', () => {
+        if (!state.trade) return;
+        if (document.hidden) state.hiddenAt = Date.now();
+        else if (state.hiddenAt) {
+            const away = Math.round((Date.now() - state.hiddenAt) / 1000);
+            state.hiddenAt = 0;
+            if (away >= 2) {
+                state.tradePhase = `This tab was in the background for ${away}s, which stops the link. Keep it in view while you trade.`;
+                state.tradeTone = 'warn';
+                renderTrade();
+            }
+        }
+    });
+
     navigator.usb?.addEventListener('connect', onUsbConnect);
     // Hand the adapter port back if the page goes away while it carries the link.
     window.addEventListener('pagehide', () => { if (state.bridge) state.bridge.stop(); });
@@ -1103,6 +1621,12 @@ function wireUp() {
 
 async function start() {
     wireUp();
+    // A link to one of the trees wins over the one used last.
+    const asked = location.hash.slice(1);
+    state.path = PATHS.includes(asked) ? asked : PATHS.includes(remembered(PATH_STORE)) ? remembered(PATH_STORE) : 'gba';
+    state.source = remembered(SOURCE_STORE) === 'party' ? 'party' : 'pool';
+    state.poolServer = remembered(SERVER_STORE) || POOL_SERVER;
+    loadKept();
     const serial = EspDevice.available();
     if (!serial || !window.isSecureContext) {
         const notice = $('unsupported');
@@ -1110,6 +1634,11 @@ async function start() {
         notice.textContent = serial
             ? 'Browsers only allow access to USB devices from https:// pages or from localhost.'
             : 'This browser has no Web Serial, which this page needs to reach the boards. Use Chrome, Edge or another Chromium browser on a computer.';
+    }
+    try {
+        state.partyNote = (await state.party.load()) === 'empty' ? 'Drop a .pk3 file on a slot to add a Pokémon.' : '';
+    } catch (error) {
+        log('page', describe(error));
     }
     try {
         state.manifest = await loadManifest();

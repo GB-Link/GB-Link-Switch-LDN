@@ -57,6 +57,25 @@ plugged in, choose the same activity and join the group; the Switch player is li
 after a few seconds. After you leave the room the bridge restarts and is ready for the
 next one about ten seconds later.
 
+### Without a Game Boy Advance
+
+The page can also play the second game itself, so you can trade with the Switch using
+only the ESP32 board: choose *Just the Switch* at the top of the page
+(<https://switch.gblink.io/#switch> opens it directly). There are two things to trade
+with:
+
+- **Wonder Trade.** A trade with the online pool that <https://pokemon.gblink.io> uses, on
+  the same server: the pool picks the Pokémon, and what the Switch gives for it goes into
+  the pool for whoever comes next. Leaving the trade menu on the Switch and sitting down
+  again brings a different one. <https://pokemon.gblink.io/pool> shows what is in the pool.
+- **PK3 files.** A party of your own lives in the browser, Pokémon go in and come out as
+  `.pk3` files, and what the Switch sends takes the place of what you gave.
+
+The board finds the room and does the wireless, exactly as it does for a real Game Boy
+Advance; the page only plays the game. Keep the tab in view while you trade, so the game
+it plays keeps answering. The pictures come from PokeAPI. The desktop app in
+[`host/`](host/README.md) trades from a party of your own on Windows and Linux.
+
 ## Repository layout
 
 | Directory | Contents |
