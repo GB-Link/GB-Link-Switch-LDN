@@ -6,6 +6,7 @@ using System.Text.Json;
 using Avalonia;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
+using Avalonia.Threading;
 using PKHeX.Core;
 
 namespace Frlg.Trade.Desktop;
@@ -93,12 +94,21 @@ public sealed class PokemonSlot(int index, bool opponent) : Observable
     {
         pokemon = value;
         Sprite = null;
-        if (value != null)
-        {
-            using var stream = DefaultAssets.Open($"sprites.{value.Species}.png");
-            Sprite = CropSprite(new Bitmap(stream));
-        }
         foreach (var name in new[] { nameof(Pokemon), nameof(Occupied), nameof(CanClear), nameof(Nickname), nameof(Level), nameof(Gender), nameof(GenderBrush), nameof(Selection), nameof(Outline), nameof(Details), nameof(Sprite) }) Notify(name);
+        if (value != null) _ = ShowSprite(value.Species);
+    }
+    // The picture follows the Pokémon, from local/sprites or the network, and is left out
+    // when neither has it.
+    private async Task ShowSprite(ushort species)
+    {
+        var bitmap = await Sprites.For(species);
+        if (bitmap is null) return;
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (pokemon?.Species != species) return;
+            Sprite = CropSprite(bitmap);
+            Notify(nameof(Sprite));
+        });
     }
     public void Select(bool value) { selected = value; Notify(nameof(Outline)); Notify(nameof(Selection)); }
     // Sprites are padded to a common size; crop to the drawn pixels.

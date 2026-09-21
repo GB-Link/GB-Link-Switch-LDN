@@ -54,8 +54,11 @@ One program for both systems, built on [Avalonia](https://avaloniaui.net).
   Your user needs access to serial ports: the `dialout` group on Fedora, Debian and Ubuntu, `uucp`
   on Arch.
 
-The default Pokémon and all sprites are embedded, so copying the one file is enough; `assets` and
-`project.json` are not needed at run time. The party, settings and session logs are written to
+The default Pokémon are embedded, so copying the one file is enough; `assets` and
+`project.json` are not needed at run time. The program ships no artwork: each Pokémon's picture is
+downloaded from the [PokeAPI sprite collection](https://github.com/PokeAPI/sprites) the first time
+it is shown and kept in `local/sprites`, so a picture that has been seen once also shows without a
+network, and one that has not is simply left out. The party, settings and session logs are written to
 `local/` next to the program, so keep it in a writable directory. An AppImage runs from a read-only
 mount, so for it "next to the program" means next to the AppImage file, for `local/` and for
 `prod.keys` alike. The port is selected in the interface. On Linux the list leaves out the machine's
@@ -183,7 +186,9 @@ against a stand-in for the firmware's console: a board that is still starting, f
 before 2.0, a port where nothing answers, and the radio being taken and given back. The private
 trade replay runs in addition when it is present and is explicitly reported as skipped otherwise.
 The desktop self-test draws off screen, so it needs no display; it renders images into
-`local/ui-checks` next to the program and restores the real party and settings afterwards.
+`local/ui-checks` next to the program and restores the real party and settings afterwards. It
+draws its own Pokémon pictures and keeps them there too, so it uses neither the network nor
+`local/sprites`.
 
 Validation so far: the board diagnostic passes against firmware 2.0 on an original ESP32
 (2026-09-19). A complete trade through these hosts on firmware 2.0 has not been run yet; the

@@ -17,7 +17,6 @@
   <ItemGroup>
     <AvaloniaResource Include="Assets/icon.png" />
     <EmbeddedResource Include="../../assets/party.json" LogicalName="Assets.party.json" />
-    <EmbeddedResource Include="../../assets/sprites/*.png" LogicalName="Assets.sprites.%(Filename)%(Extension)" />
     <ProjectReference Include="../core/Frlg.Trade.Core.csproj" />
     <PackageReference Include="Avalonia" Version="12.1.2" />
     <PackageReference Include="Avalonia.Desktop" Version="12.1.2" />

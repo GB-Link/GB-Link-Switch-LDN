@@ -5,6 +5,7 @@ using Avalonia.Controls;
 using Avalonia.Headless;
 using Avalonia.Input;
 using Avalonia.Media.Imaging;
+using Avalonia.Platform;
 using Avalonia.Threading;
 
 namespace Frlg.Trade.Desktop;
@@ -15,6 +16,44 @@ public static class SmokeTests
     private static int checks;
     private static void Require(bool condition, string message)
     { checks++; if (!condition) throw new InvalidOperationException(message); }
+
+    // Pictures for the checks are drawn here and kept in a folder of the checks' own, so
+    // neither the network nor local/sprites is touched. Called before the window loads
+    // its party.
+    private static int downloads;
+    private static bool offline, garbled;
+    public static void Prepare()
+    {
+        string folder = Path.Combine(Paths.Local, "ui-checks", "sprites");
+        if (Directory.Exists(folder)) Directory.Delete(folder, true);
+        Sprites.Use(folder, species =>
+        {
+            downloads++;
+            if (offline) throw new HttpRequestException("The UI checks have no network");
+            return Task.FromResult(garbled ? "<html>not a picture</html>"u8.ToArray() : Picture(species));
+        });
+    }
+    // A square in the middle of a larger transparent image, as the real pictures are padded.
+    private static byte[] Picture(int species)
+    {
+        const int size = 16;
+        var pixels = new byte[size * size * 4];
+        for (int y = 4; y < 12; y++) for (int x = 4; x < 12; x++)
+        {
+            int at = (y * size + x) * 4;
+            pixels[at] = (byte)species; pixels[at + 1] = (byte)(species >> 8); pixels[at + 2] = 200; pixels[at + 3] = 255;
+        }
+        using var bitmap = new WriteableBitmap(new PixelSize(size, size), new Vector(96, 96), PixelFormat.Bgra8888, AlphaFormat.Unpremul);
+        using (var frame = bitmap.Lock()) Marshal.Copy(pixels, 0, frame.Address, pixels.Length);
+        using var stream = new MemoryStream();
+        bitmap.Save(stream, new PngBitmapEncoderOptions());
+        return stream.ToArray();
+    }
+    private static async Task<bool> Until(Func<bool> done)
+    {
+        for (int i = 0; i < 150 && !done(); i++) await Task.Delay(20);
+        return done();
+    }
 
     public static async Task Run(MainWindow window)
     {
@@ -32,16 +71,22 @@ public static class SmokeTests
             var builtIn = window.LocalParty.Slots.Where(s => s.Occupied).Select(s => s.Pokemon!).ToArray();
             Require(builtIn.Length >= 2 && window.LocalParty.Slots[window.LocalParty.Selected].Occupied, "Built-in party can start a trade");
             for (int i = 0; i < 6; i++) window.LocalParty.Slots[i].Set(i < 2 ? builtIn[i] : null);
-            for (int spriteId = 1; spriteId <= 386; spriteId++)
-            {
-                using var sprite = DefaultAssets.Open($"sprites.{spriteId}.png");
-                using var decoded = new Bitmap(sprite);
-                Require(decoded.PixelSize.Width > 0, $"Embedded sprite {spriteId} decodes");
-            }
+            int before = downloads;
+            Require(await Sprites.For(150) != null && downloads == before + 1 && File.Exists(Path.Combine(Sprites.Folder, "150.png")), "A picture is downloaded once and kept");
+            offline = true;
+            Sprites.Use(Sprites.Folder, Sprites.Download);
+            Require(await Sprites.For(150) != null && downloads == before + 1, "A kept picture needs no network");
+            Require(await Sprites.For(151) == null, "No network and no copy means no picture");
+            offline = false;
+            Require(await Sprites.For(151) != null, "The download is tried again the next time");
+            garbled = true;
+            Require(await Sprites.For(152) == null && !File.Exists(Path.Combine(Sprites.Folder, "152.png")), "A reply that is not a picture is not kept");
+            garbled = false;
             window.LocalParty.Select(1);
             Require(window.OpponentSlots.All(s => !s.Occupied), "Disconnected opponents must be blank");
             Require(window.ConnectButton.IsEnabled && !window.DisconnectButton.IsEnabled && !window.CancelTradeButton.IsEnabled, "Initial button state");
-            Require(window.LocalParty.Slots.Take(2).All(s => s.Sprite != null), "Default sprites");
+            Require(await Until(() => window.LocalParty.Slots.Take(2).All(s => s.Sprite != null)), "Default sprites");
+            Require(window.LocalParty.Slots[0].Sprite!.Size == new Size(8, 8), "Pictures are cropped to what is drawn");
             await Capture(window, output, "disconnected");
 
             await Click(window, window.LocalGrid, 0);
@@ -78,7 +123,7 @@ public static class SmokeTests
             var auto = window.AutoOt.IsChecked; window.AutoOt.IsChecked = false;
             using (var doc = JsonDocument.Parse(JsonSerializer.Serialize(new { @event = "opponent_party", name = "ezwd", party })))
                 window.HandleEvent(doc.RootElement);
-            Require(window.OpponentSlots.All(s => s.Occupied && s.Sprite != null), "Live event fills all six sprites");
+            Require(window.OpponentSlots.All(s => s.Occupied) && await Until(() => window.OpponentSlots.All(s => s.Sprite != null)), "Live event fills all six sprites");
             Require(window.CancelTradeButton.IsEnabled, "Cancel trade enabled in the trade menu");
             using (var yes = JsonDocument.Parse("{\"event\":\"declining\",\"value\":true}")) window.HandleEvent(yes.RootElement);
             Require(!window.CancelTradeButton.IsEnabled, "Cancel trade disabled while declining");

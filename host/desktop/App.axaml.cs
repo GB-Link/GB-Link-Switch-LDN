@@ -17,6 +17,7 @@ public partial class App : Application
             bool smokeTest = args.Contains("--smoke-test");
             try
             {
+                if (smokeTest) SmokeTests.Prepare();
                 var window = new MainWindow();
                 desktop.MainWindow = window;
                 window.Opened += async (_, _) =>
