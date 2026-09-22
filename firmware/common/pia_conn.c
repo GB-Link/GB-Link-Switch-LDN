@@ -4,6 +4,14 @@
 
 #include "esp_random.h"
 
+/* A random station id other than zero and `taken`. */
+static uint16_t station_id(uint16_t taken)
+{
+    uint16_t id;
+    do id = (uint16_t)esp_random(); while (id == 0 || id == taken);
+    return id;
+}
+
 static pia_outbox_t *outbox_add(pia_conn_t *c, uint8_t protocol, const uint8_t *payload, size_t len,
                                 uint16_t dst, uint16_t src)
 {
@@ -24,7 +32,7 @@ static pia_outbox_t *outbox_add(pia_conn_t *c, uint8_t protocol, const uint8_t *
 void pia_conn_init(pia_conn_t *c, const uint8_t our_mac[6], const uint8_t host_mac[6], const char *our_ip)
 {
     memset(c, 0, sizeof(*c));
-    c->our_id = 0xc493;
+    c->our_id = station_id(0);
     c->last_rtt_tick = -100;
     c->system_time = 0x10000;
     memcpy(c->our_mac, our_mac, 6);
@@ -96,6 +104,7 @@ void pia_conn_feed(pia_conn_t *c, const pia_message_t *m, int tick)
         {
             memcpy(c->remote_mac, p + 10, 6);
             if (c->host_id == 0) c->host_id = bin_b16(p + 8);
+            if (c->our_id == c->host_id) c->our_id = station_id(c->host_id);
 
             /* Source id 0 and packet id 0: the form of acknowledgement the host takes. */
             net_ack(c, 0x12, p + 4, 0);

@@ -155,11 +155,13 @@ static void game_name(const char *name, uint8_t *out, int size)
     out[n] = 255;
 }
 
+#define BEACON_COMPATIBILITY (2 | (1 << 7) | (1 << 8) | (1 << 9) | (4 << 10))
+
 static void build_beacon(uint8_t *beacon, const char *name, uint8_t activity)
 {
     memset(beacon, 0, 24);
     bin_w16(beacon, 0x0002);                 /* RFU_SERIAL_GAME */
-    bin_w16(beacon + 2, 2 | (4 << 10));      /* English, FireRed */
+    bin_w16(beacon + 2, BEACON_COMPATIBILITY);
     bin_w16(beacon + 4, 0x1234);             /* trainer id */
     beacon[12] = activity;                   /* not started */
     uint8_t uname[8];

@@ -13,7 +13,7 @@ void ldn_control_set_action_handler(void (*handler)(const uint8_t source[6], con
 bool ldn_control_connected(void);
 void ldn_control_mac(uint8_t out[6]);
 /* Firmware version reported by LDN_INFO. */
-#define BRIDGE_VERSION "2.0.0"
+#define BRIDGE_VERSION "2.0.1"
 /* Switch the console line rate if LDN_BAUD asked for it; call once the reply has gone. */
 void ldn_control_apply_baud(void);
 /* Push everything queued for the adapter and the console out before a restart. */

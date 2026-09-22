@@ -152,8 +152,9 @@ public sealed class PiaCrypto(byte[] ssid) : IDisposable
 public sealed record ConnectionPacket(PiaMessage Message, int Dst, int Src, bool Compress = false, bool Footer = true, bool Establishing = false, int? Packet = null, int? FooterId = null);
 public sealed class PiaConnection(byte[] ourMac, byte[] hostMac, string ourIp)
 {
-    public int OurId = 0xc493, HostId;
+    public int OurId = StationId(0), HostId;
     public bool Connected => state == 2;
+    private static int StationId(int taken) { int id; do id = RandomNumberGenerator.GetInt32(1, 0x10000); while (id == taken); return id; }
     private int state, lastRtt = -100;
     private byte[] remoteMac = hostMac, random = RandomNumberGenerator.GetBytes(4);
     private byte[]? template;
@@ -177,6 +178,7 @@ public sealed class PiaConnection(byte[] ourMac, byte[] hostMac, string ourIp)
             if (p[1] == 0x11 && state == 0 && p.Length >= 16)
             {
                 remoteMac = p[10..16]; if (HostId == 0) HostId = Bin.B16(p, 8);
+                if (OurId == HostId) OurId = StationId(HostId);
                 Outbox.Add(new(new(1, Bin.Join(Bin.Hex("01120000"), p[4..8])), 0, 0, Footer: false, Establishing: true, Packet: 0));
                 Outbox.Add(new(new(13, Join()), 0, OurId, true, false, true, 0));
             }

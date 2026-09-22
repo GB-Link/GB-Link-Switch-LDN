@@ -33,7 +33,8 @@ public sealed class LeaderBridge(GbLinkDevice device, Action<string> log)
     {
         var b = new byte[24];
         Bin.W16(b, 0, 0x0002);                         // RFU_SERIAL_GAME
-        Bin.W16(b, 2, 2 | (4 << 10));                  // compatibility: language English (2), version FireRed (4)
+        // Compatibility: language English (2), version FireRed (4), and the story-progress flags canLinkNationally,
+        Bin.W16(b, 2, 2 | (1 << 7) | (1 << 8) | (1 << 9) | (4 << 10));
         Bin.W16(b, 4, trainerId);                      // playerTrainerId; partnerInfo[4] and tradeSpecies/tradeType stay zero
         b[12] = (byte)((activity & 0x7F) | (started ? 0x80 : 0));
         var uname = Rfu.Name(name, 8); uname.CopyTo(b, 16);
