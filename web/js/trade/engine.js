@@ -51,7 +51,7 @@ export class TradeEngine {
         this.offering = false;   // the player of this page has made an offer
         this.declining = false; this.trading = false; this.cancelled = false; this.cancelAfterSend = false;
         this.cancelBarrier = false; this.returnBarrier = false; this.postCancel = false; this.saveBarriers = false; this.seam = false;
-        this.saveSettle = 0; this.postSeat = 0; this.seated = false;
+        this.postSeat = 0; this.seated = false;
         this.seatRound = 2;          // the standby round that follows sitting down
         this.awaitingVerdict = false;
         this.partyHeld = false;
@@ -197,7 +197,6 @@ export class TradeEngine {
             if (i !== 1 && (op === 0x6600 || op === 0x5f00) && !barrierSeen) { this.barrier.feed(op, value); barrierSeen = true; }
         }
         this.barrier.observe(barrierSeen);
-        if (this.saveBarriers) this.saveSettle = barrierSeen ? 0 : this.saveSettle + 1;
         const hostBlock = completed.some((c) => c.peer === 0);
         if (this.saveBarriers && (requests.length > 0 || hostBlock)) { this.saveBarriers = false; this.barrier.reset(); }
         if (this.heldRequest !== null && !this.partyHeld && requests.length === 0) { requests.push(this.heldRequest); this.heldRequest = null; }
@@ -301,7 +300,7 @@ export class TradeEngine {
         this.commits++;
         this.trading = false;
         this.onCommitted?.(this.received, slot);
-        this.saveBarriers = true; this.saveSettle = 0;
+        this.saveBarriers = true;
         this.sentParty = this.hostBlocks = this.settle = 0;
         this.hostParty = new Uint8Array(600);
         this.hostCursor = -1;
@@ -345,12 +344,13 @@ export class TradeEngine {
             this.returnToRoom();
         }
         if (this.postCancel && this.barrier.active) return this.barrier.emit() ?? words(0);
+        // The Switch answers the rounds around its save once its game gets there, and a
+        // Pokémon that evolves on arrival comes first, with a move to replace taking as
+        // long as its player likes. The leader never starts a round, so this side keeps
+        // asking, as a game does, until the Switch's party request ends them.
         if (this.saveBarriers) {
-            if (!this.barrier.active && this.saveSettle > 600) this.saveBarriers = false;
-            else {
-                if (!this.barrier.active) this.barrier.initiate();
-                return this.barrier.emit() ?? words(0);
-            }
+            if (!this.barrier.active) this.barrier.initiate();
+            return this.barrier.emit() ?? words(0);
         }
         this.timers();
         if (this.animWait >= 0 && !this.seam) { this.seam = true; this.barrier.initiate(); }

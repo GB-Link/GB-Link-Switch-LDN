@@ -32,7 +32,7 @@ public sealed class TradeEngine
     private int sentParty, hostBlocks, settle, hostCursor = -1, animWait = -1, reselect = -1;
     private bool playerSent, cardSupplied, seatOver, menuComplete, ribbons, selected, confirmed, finishSent, pendingConfirm;
     private bool declining, trading, cancelled, cancelAfterSend, cancelBarrier, returnBarrier, postCancel, saveBarriers, seam;
-    private int saveSettle, firstEmits, secondEmits, thirdEmits, fourthEmits, thirdGap, fourthGap, postSeat;
+    private int firstEmits, secondEmits, thirdEmits, fourthEmits, thirdGap, fourthGap, postSeat;
     private bool seated;
     public int AnimationFrames { get; set; } = 1935;
     public TradeEngine(byte[]?[] data, int selectedSlot)
@@ -110,7 +110,6 @@ public sealed class TradeEngine
             if (i != 1 && op is 0x6600 or 0x5f00 && !barrierSeen) { Barrier.Feed(op, value); barrierSeen = true; }
         }
         Barrier.Observe(barrierSeen);
-        if (saveBarriers) saveSettle = barrierSeen ? 0 : saveSettle + 1;
         bool hostBlock = completed.Any(c => c.Peer == 0);
         if (saveBarriers && (requests.Count > 0 || hostBlock)) { saveBarriers = false; Barrier.Reset(); }
         foreach (int req in requests)
@@ -188,7 +187,7 @@ public sealed class TradeEngine
         int slot = sentCursor;
         Received = Parse(received).Data.ToArray(); party[slot] = received; Commits++; trading = false;
         Committed?.Invoke(Received, slot);
-        saveBarriers = true; saveSettle = 0;
+        saveBarriers = true;
         sentParty = hostBlocks = settle = 0; hostParty = new byte[600]; hostCursor = -1;
         selected = ribbons = finishSent = pendingConfirm = confirmed = seam = false; animWait = reselect = -1; State = 0;
     }
@@ -227,10 +226,13 @@ public sealed class TradeEngine
             returnBarrier = false; Done = postCancel = true;
         }
         if (postCancel && Barrier.Active) return Barrier.Emit() ?? Rfu.Words(0);
+        // The Switch answers the rounds around its save once its game gets there, and a Pokémon that evolves on
+        // arrival comes first, with a move to replace taking as long as its player likes. The leader never
+        // starts a round, so this side keeps asking, as a game does, until the Switch's party request ends them.
         if (saveBarriers)
         {
-            if (!Barrier.Active && saveSettle > 600) saveBarriers = false;
-            else { if (!Barrier.Active) Barrier.Initiate(); return Barrier.Emit() ?? Rfu.Words(0); }
+            if (!Barrier.Active) Barrier.Initiate();
+            return Barrier.Emit() ?? Rfu.Words(0);
         }
         Timers();
         if (animWait >= 0 && !seam) { seam = true; Barrier.Initiate(); }
