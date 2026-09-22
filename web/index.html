@@ -4,14 +4,20 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>GB-Link Switch LDN</title>
-    <meta name="description" content="Link Pokémon FireRed and LeafGreen on Nintendo Switch with a real Game Boy Advance, or trade with it from the browser: Wonder Trade with an online pool, or trade Pokémon from your own .pk3 files.">
+    <meta name="description" content="Play Pokémon FireRed and LeafGreen on the Switch with a real Game Boy Advance, or trade with the Switch straight from your browser.">
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%237c8cff'/%3E%3Cpath d='M9 12h14M9 20h14M12 9l-3 3 3 3M20 17l3 3-3 3' stroke='%230b0d18' stroke-width='2.4' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
     <header class="masthead">
-        <h1>GB-Link Switch LDN</h1>
-        <p>Link Pokémon FireRed / LeafGreen on Nintendo Switch with a real Game Boy Advance, or trade with it straight from this page. An ESP32 board joins the Switch's wireless room.</p>
+        <div class="masthead-row">
+            <h1>GB-Link Switch LDN</h1>
+            <nav class="site-links" aria-label="GB-Link links">
+                <a href="https://gblink.io">gblink.io</a>
+                <a href="https://github.com/GB-Link/GB-Link-Switch-LDN">GitHub</a>
+            </nav>
+        </div>
+        <p>Play Pokémon FireRed and LeafGreen on the Switch with a real Game Boy Advance, or trade with the Switch straight from this page.</p>
     </header>
 
     <main>
@@ -20,12 +26,12 @@
         <nav class="paths" id="paths" role="tablist" aria-label="What links with the Switch">
             <button class="path" type="button" role="tab" id="path-gba" data-path="gba" aria-selected="true">
                 <strong>GBA to Switch</strong>
-                <span>A real Game Boy Advance joins the Switch's room, to trade and to battle.</span>
+                <span>A real Game Boy Advance trades and battles with the Switch.</span>
                 <span class="needs">ESP32 + GB-Link required</span>
             </button>
             <button class="path" type="button" role="tab" id="path-switch" data-path="switch" aria-selected="false">
-                <strong>Just the Switch</strong>
-                <span>This page plays the second game. Wonder Trade with an online pool, or trade Pokémon from your own .pk3 files.</span>
+                <strong>PC to Switch</strong>
+                <span>Trade with the Switch from this page: Wonder Trade, or your own .pk3 files.</span>
                 <span class="needs">ESP32 required</span>
             </button>
         </nav>
@@ -35,7 +41,7 @@
                 <span class="step">1</span>
                 <div>
                     <h2 id="esp-title">ESP32 board</h2>
-                    <p class="sub">Joins the Switch's wireless room. ESP32-S3, C6, C3 or the original ESP32.</p>
+                    <p class="sub">Joins the Switch's wireless. ESP32-S3, C6, C3 or the original ESP32.</p>
                 </div>
                 <span class="dot" id="esp-dot"></span>
             </div>
@@ -54,7 +60,7 @@
                     <span>or click to choose the file</span>
                 </label>
                 <p class="status" id="keys-status" aria-live="polite"></p>
-                <p class="fine">The Switch encrypts its local wireless with keys from the console, so the board needs four of them from your own Switch. The file is read here in your browser and only those four values go to the board, over USB. Nothing is uploaded.</p>
+                <p class="fine">The Switch's wireless is encrypted with keys from the console. Four of them go from this file to the board over USB. Nothing is uploaded.</p>
             </div>
 
             <details class="more" id="esp-details" hidden>
@@ -129,7 +135,7 @@
                 <span class="step">3</span>
                 <div>
                     <h2 id="play-title">Play</h2>
-                    <p class="sub">The two boards talk either over a few wires, with no computer involved, or through this page.</p>
+                    <p class="sub">Connect the two boards with three wires, or let this page carry the link.</p>
                 </div>
                 <span class="dot" id="play-dot"></span>
             </div>
@@ -142,7 +148,7 @@
             <div class="choices">
                 <div class="choice">
                     <h3>Standalone</h3>
-                    <p>Join the boards with three wires and power them from anything. This page is not needed while you play.</p>
+                    <p>Three wires between the boards, powered from anything. This page is not needed while you play.</p>
                     <p class="fine" id="wiring">Connect the board in step 1 to see which of its pins go to the adapter's <strong>GP8</strong> and <strong>GP9</strong>.</p>
                     <table class="wires" id="wires" hidden>
                         <thead><tr><th>ESP32 board</th><th>GB-Link adapter</th></tr></thead>
@@ -157,7 +163,7 @@
                 </div>
                 <div class="choice">
                     <h3>Through this computer</h3>
-                    <p>Leave both boards plugged into USB and let this page carry the link. Keep the tab open and in view while you play.</p>
+                    <p>Both boards on USB, this page in between. Keep the tab in view while you play.</p>
                     <div class="actions">
                         <button class="primary" id="bridge-start" disabled>Start</button>
                         <button id="bridge-stop" hidden>Stop</button>
@@ -174,11 +180,10 @@
             <details class="more" open>
                 <summary>On the consoles</summary>
                 <ol class="fine">
-                    <li>On the Switch, go upstairs in a Pokémon Center to the Direct Corner, choose Trade Center or Colosseum, and become the group leader.</li>
-                    <li>On the Game Boy Advance, with the adapter plugged in, choose the same activity and join a group. The Switch player is listed after a few seconds.</li>
-                    <li>When you leave the room, the ESP32 board restarts and is ready for the next one about ten seconds later.</li>
+                    <li>Switch: upstairs in a Pokémon Center, Direct Corner, Trade Center or Colosseum, become the leader.</li>
+                    <li>Game Boy Advance: pick the same thing and join the group. The Switch shows up after a few seconds.</li>
+                    <li>After you leave the room, the board restarts and is ready again about ten seconds later.</li>
                 </ol>
-                <p class="fine">Trades and single battles work. To trade without a Game Boy Advance at all, choose <strong>Just the Switch</strong> at the top of this page.</p>
             </details>
         </section>
 
@@ -187,7 +192,7 @@
                 <span class="step">2</span>
                 <div>
                     <h2 id="trade-title">Trade</h2>
-                    <p class="sub">This page plays the second game, so the board from step 1 is all it takes.</p>
+                    <p class="sub">Trade with the Switch from this page. The board from step 1 is all it takes.</p>
                 </div>
                 <span class="dot" id="trade-dot"></span>
             </div>
@@ -196,8 +201,8 @@
                 <button type="button" data-source="pool" aria-pressed="true">Wonder Trade</button>
                 <button type="button" data-source="party" aria-pressed="false">PK3 files</button>
             </div>
-            <p class="fine" id="source-note-pool">Wonder Trade to a trade pool: the pool picks the Pokémon you get, and what the Switch gives for it goes into the pool for whoever comes next. See what is in the pool at <a href="https://pokemon.gblink.io/pool" target="_blank" rel="noopener">pokemon.gblink.io/pool</a>.</p>
-            <p class="fine" id="source-note-party" hidden>A party of your own, loaded and saved as <code>.pk3</code> files and kept in this browser. What the Switch sends takes the place of what you gave.</p>
+            <p class="fine" id="source-note-pool">The pool picks the Pokémon you get, and what the Switch gives goes into the pool for the next person. See what is in it at <a href="https://pokemon.gblink.io/pool" target="_blank" rel="noopener">pokemon.gblink.io/pool</a>.</p>
+            <p class="fine" id="source-note-party" hidden>Your own party as <code>.pk3</code> files, kept in this browser. What the Switch sends takes the place of what you gave.</p>
 
             <p class="status" id="trade-status" aria-live="polite"></p>
             <p class="hint" id="trade-hint"></p>
@@ -210,18 +215,18 @@
                 <div class="party">
                     <h3 id="our-name">The pool</h3>
                     <div class="slots" id="our-slots"></div>
-                    <p class="fine" id="party-note" hidden>Click a Pokémon to offer it, once both of you are at the trade table. Nothing is offered until you do, so the Switch can leave the menu with a single cancel. <span class="glyph">↓</span> saves one as a <code>.pk3</code> file and <span class="glyph">↑</span> puts a different one in its place; a file dropped on a slot does the same.</p>
+                    <p class="fine" id="party-note" hidden>Once you are both at the trade table, click a Pokémon to offer it. <span class="glyph">↓</span> saves one as a <code>.pk3</code> file, <span class="glyph">↑</span> replaces it; dropping a file on a slot does the same.</p>
                     <div class="answers" id="pool-answers" hidden>
                         <button class="primary" type="button" id="pool-accept" aria-pressed="false">Accept trade</button>
                         <button type="button" id="pool-cancel" aria-pressed="false">Cancel trade</button>
                     </div>
-                    <p class="fine" id="pool-note">The pool's Pokémon shows up here together with the Switch's team, once both of you are at the trade table. <strong>Accept trade</strong> puts it on offer, before or after choosing yours on the Switch; <strong>Cancel trade</strong> answers with a cancel instead. Until you press one, a single CANCEL on the Switch leaves the menu, and sitting down again brings a different Pokémon.</p>
+                    <p class="fine" id="pool-note">The pool's Pokémon shows up here once you are both at the trade table. <strong>Accept trade</strong> offers it, before or after you pick yours on the Switch. <strong>Cancel trade</strong> declines it. For a different one, leave the table and sit down again.</p>
                 </div>
             </div>
 
             <div class="kept" id="kept" hidden>
                 <h3>Kept here</h3>
-                <p class="fine">The trade pool did not confirm these swaps, so what the Switch gave was kept in this browser instead. <span class="glyph">↓</span> saves one as a <code>.pk3</code> file.</p>
+                <p class="fine">The pool did not confirm these trades, so what the Switch gave is kept here. <span class="glyph">↓</span> saves one as a <code>.pk3</code> file.</p>
                 <div class="slots" id="kept-slots"></div>
             </div>
 
@@ -236,10 +241,10 @@
             <details class="more" open>
                 <summary>On the Switch</summary>
                 <ol class="fine">
-                    <li>Go upstairs in a Pokémon Center to the Direct Corner, choose Trade Center, and become the group leader.</li>
-                    <li>Press Connect here. This page asks to join a few seconds later: accept it on the Switch.</li>
-                    <li>Sit down at the trade table. The trade menu opens with both sides' Pokémon.</li>
-                    <li>CANCEL in the trade menu brings you back to the room, where sitting down again opens a new menu. Leaving the room ends the visit.</li>
+                    <li>Upstairs in a Pokémon Center, Direct Corner, Trade Center, become the leader.</li>
+                    <li>Press Connect here, then accept the join on the Switch.</li>
+                    <li>Sit down at the trade table.</li>
+                    <li>CANCEL at the table takes you back to the room; sit down again for another trade. Leaving the room ends the visit.</li>
                 </ol>
             </details>
             <details class="more">
@@ -249,8 +254,8 @@
                     <button class="quiet" id="trade-reset">Set default party</button>
                 </div>
                 <p class="fine" id="pool-options"><label for="pool-server">Trade pool server</label> <input type="text" id="pool-server" spellcheck="false" autocomplete="off"> <button class="quiet" id="pool-server-reset" hidden>Back to the usual one</button></p>
-                <p class="fine" id="party-board" hidden>The board finds the room and does the wireless, as it does for a real Game Boy Advance; this page only plays the game. Keep the tab in view while you trade, because a browser slows a tab it is not showing and a game that stops answering is dropped.</p>
-                <p class="fine" id="party-fine" hidden>Your party is kept in this browser. A Pokémon that arrives takes the place of the one that went, so choosing it again trades it straight back.</p>
+                <p class="fine" id="party-board" hidden>Keep the tab in view while you trade: a hidden tab runs too slowly for the game.</p>
+                <p class="fine" id="party-fine" hidden>A Pokémon that arrives takes the slot of the one that left. Offer it again to trade it straight back.</p>
             </details>
         </section>
 
@@ -267,7 +272,7 @@
     </main>
 
     <footer>
-        <p>Runs entirely in your browser: Chrome, Edge or another Chromium browser on a computer. <a href="https://github.com/GB-Link/GB-Link-Switch-LDN">Source and documentation</a> · AGPL-3.0. Flashing uses <a href="https://github.com/espressif/esptool-js">esptool-js</a> (Apache-2.0) and <a href="https://github.com/picoflash/picoflash">picoflash</a> (MIT). Not affiliated with Nintendo or The Pokémon Company.</p>
+        <p>Works in Chrome, Edge and other Chromium browsers on a computer. <a href="https://github.com/GB-Link/GB-Link-Switch-LDN">Source</a> · AGPL-3.0. Firmware is written with <a href="https://github.com/espressif/esptool-js">esptool-js</a> (Apache-2.0) and <a href="https://github.com/picoflash/picoflash">picoflash</a> (MIT). Not affiliated with Nintendo or The Pokémon Company.</p>
     </footer>
 
     <script type="module" src="js/app.js"></script>

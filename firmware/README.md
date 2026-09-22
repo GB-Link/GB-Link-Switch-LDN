@@ -16,12 +16,16 @@ advertised as well and has not been tested.
 One source tree (`common/`) builds for four chips; each chip's folder holds only its
 target, console transport, pinned Wi-Fi driver hash and defaults.
 
-| Folder | Console | To the GB-Link's GP9 | To its GP8 | Status |
-| --- | --- | --- | --- | --- |
-| `ESP32-S3` | native USB Serial/JTAG | GPIO2 | GPIO1 | verified: trades and single battles |
-| `ESP32-C6` | native USB Serial/JTAG | GPIO2 | GPIO1 | builds; an earlier revision traded, with weaker reception than the S3 |
-| `ESP32-C3` | native USB Serial/JTAG | GPIO5 | GPIO4 | builds; not yet run standalone |
-| `ESP32` | UART0 through the board's USB bridge, 921600 baud | GPIO17 (TX2) | GPIO16 (RX2) | starts, sets up and carries the link from the web client; not yet played on. The least memory of the four: about 19 KB free once running |
+The original ESP32 and the ESP32-S3 are the recommended chips.
+
+| Folder | Console | To the GB-Link's GP9 | To its GP8 |
+| --- | --- | --- | --- |
+| `ESP32` | UART0 through the board's USB bridge, 921600 baud | GPIO17 (TX2) | GPIO16 (RX2) |
+| `ESP32-S3` | native USB Serial/JTAG | GPIO2 | GPIO1 |
+| `ESP32-C6` | native USB Serial/JTAG | GPIO2 | GPIO1 |
+| `ESP32-C3` | native USB Serial/JTAG | GPIO5 | GPIO4 |
+
+The original ESP32 has the least memory of the four, about 19 KB free once running.
 
 The GP9 column is the board's transmit pin (`CONFIG_PICO_LINK_TX_GPIO` in the folder's
 `sdkconfig.defaults`) and the GP8 column its receive pin (`CONFIG_PICO_LINK_RX_GPIO`);

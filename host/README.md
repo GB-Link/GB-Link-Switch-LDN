@@ -1,7 +1,6 @@
 # Desktop and console hosts
 
-Trading with the Switch from a PC, with no Game Boy Advance involved: the PC plays the
-other game. This is the upstream design of
+Trading with the Switch from a PC, with no Game Boy Advance involved. Based on
 [easyworld/frlg-ldn-trade-esp32](https://github.com/easyworld/frlg-ldn-trade-esp32),
 itself a port of [tornadus/frlg-ldn-trade](https://github.com/tornadus/frlg-ldn-trade),
 translated to English here.

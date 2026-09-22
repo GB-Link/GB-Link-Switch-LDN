@@ -1,71 +1,64 @@
 # Web client
 
-One page that sets up the boards and, if you want, carries the link between them or
-plays the second game itself. It is a static site with no build step and no server side:
-everything runs in the browser over Web Serial and WebUSB.
+The page at <https://switch.gblink.io>. It sets up the boards, and then either carries
+the link between them or trades with the Switch itself. It is a static site: no build
+step, no server side, everything over Web Serial and WebUSB in the browser.
 
-The page has two trees, chosen at the top and remembered. `#gba` and `#switch` in the
+Two modes, chosen at the top of the page and remembered; `#gba` and `#switch` in the
 address open one directly.
 
-**GBA to Switch** – a real GBA joins the Switch's room. Needs the ESP32 board and a
-GB-Link adapter.
+**GBA to Switch** needs the ESP32 board and a GB-Link adapter.
 
-1. **ESP32 board** – connects to the ESP32, installs or updates its firmware (the chip
-   is detected, so the same button serves the ESP32-S3, C6, C3 and the original ESP32),
-   and stores the four console keys from a `prod.keys` you drop on the page.
-2. **GB-Link adapter** – connects over WebUSB or serial, reports whether its firmware
-   has the wireless adapter mode, and installs the firmware that does.
-3. **Play** – shows what the ESP32 board is doing (looking for a room, joining, linked),
-   checks the wiring for standalone use, or stands in for the wires: with both boards
-   on USB, the page passes the adapter's traffic between them.
+1. **ESP32 board** – connects, installs or updates the firmware (the chip is detected,
+   so one button serves the ESP32-S3, C6, C3 and the original ESP32), and stores the
+   four console keys from a `prod.keys` dropped on the page.
+2. **GB-Link adapter** – connects over WebUSB or serial, checks for the wireless adapter
+   mode, and installs the firmware that has it.
+3. **Play** – shows what the board is doing, checks the wiring for standalone use, or
+   carries the adapter's traffic between the two boards over USB.
 
-**Just the Switch** – the page plays the second game itself, in place of the GBA. Needs
-only the ESP32 board.
+**PC to Switch** needs only the ESP32 board.
 
-1. **ESP32 board** – the same card, set up the same way.
-2. **Trade** – with one of two things:
-   - *Wonder Trade*: a trade with the online pool of <https://pokemon.gblink.io>
-     (<https://pokemon.gblink.io/pool> shows what is in it), on the same server
-     (`wss://pokemon-gb-online-trades.herokuapp.com`, path `/pool3`; the address can be
-     changed under *More options*). The pool offers one of its Pokémon, and the one the
-     Switch gives for it goes into the pool. The pool is reached when you connect, but
-     no Pokémon is taken from it until the player on the Switch has let the page into
-     the group, because a Pokémon on offer to one connection is kept from everyone else.
-     It comes into view on the page together with the Switch's team, as it does on the
-     Switch. The pool is asked before the trade is confirmed, so a Pokémon it will not
-     take never leaves the Switch.
-   - *PK3 files*: a party of your own, kept in the browser. Pokémon go in and out as
-     `.pk3` files (↓ and ↑ on each one, between visits), and what the Switch sends takes
-     the place of what you gave. `assets/party.json` here is the party a first visit
-     starts from, a copy of the one in the repository root; replace both before
-     publishing if you would rather not ship your own Pokémon.
+1. **ESP32 board** – the same card.
+2. **Trade** – *Wonder Trade* with the pool of <https://pokemon.gblink.io>
+   (`wss://pokemon-gb-online-trades.herokuapp.com`, path `/pool3`; changeable under
+   *More options*), or *PK3 files*, a party of your own kept in the browser.
+   `assets/party.json` here is the party a first visit starts from, a copy of the one in
+   the repository root; replace both before publishing if you would rather not ship
+   your own Pokémon.
 
-   Click one of your Pokémon to offer it, as the player on the Switch chooses one there;
-   nothing is offered until you do, because the game's leader waits for both players and
-   will not let its own player leave the menu while a partner's offer is standing. The
-   leader also never sends its own player's pick (only its cancel goes out on the link),
-   it judges that cancel the moment its own broadcast completes, and an offer that is in
-   cannot be taken back. So the page cannot wait for a pick and answer it: an offer made
-   ahead of the pick costs the Switch a second CANCEL, and one held back makes the pick
-   wait for it. The pool's Pokémon is therefore held back too: the page waits for *Accept
-   trade* or *Cancel trade* under it, pressed before or after choosing on the Switch, and
-   neither can be changed once the trade is under way. CANCEL in
-   the trade menu brings both players back to the room, and sitting down at the table
-   again opens a new menu: with the pool, that is how to get a different Pokémon. Keep
-   the tab in view: a browser slows a tab it is not showing, and a game that stops
-   answering is dropped. The pictures come from
-   [PokeAPI](https://github.com/PokeAPI/sprites).
+### Why the page never offers by itself
 
-The first two cards each show one line of status and at most one button, for whatever
-comes next on that board: connect, install firmware, add keys. A board that is ready
-shrinks to a single line. Everything else (installing again, erasing, a `.uf2` of your
-own, connecting over serial, disconnecting) is under *More options*.
+The Switch is the link leader, and the leader:
 
-**The board does the wireless, trading included.** It finds the room, joins it,
-decrypts everything and runs the session, exactly as it does for a real Game Boy
+- acts only once both players have answered,
+- never sends its own player's pick over the link, only its cancel,
+- cannot take an offer back.
+
+So the page cannot wait for the Switch's pick and answer it. An offer made first costs
+the Switch a second CANCEL to leave the menu; one held back makes the pick wait. The
+page therefore offers nothing until you say so: click a Pokémon, or press *Accept
+trade* / *Cancel trade* under the pool's Pokémon, before or after choosing on the
+Switch. Nothing changes once the trade is under way. CANCEL in the menu returns both
+players to the room; sitting down again opens a new menu, which with the pool brings a
+different Pokémon.
+
+With the pool, no Pokémon is taken until the Switch has let the page into the group,
+because one on offer to a connection is kept from everyone else, and the pool is asked
+before a trade is confirmed, so a Pokémon it will not take never leaves the Switch.
+Keep the tab in view: a browser slows a hidden tab, and a game that stops answering is
+dropped. The pictures come from [PokeAPI](https://github.com/PokeAPI/sprites).
+
+The first two cards show one line of status and at most one button for whatever comes
+next on that board. A board that is ready shrinks to a single line; installing again,
+erasing, a `.uf2` of your own, connecting over serial and disconnecting are under
+*More options*.
+
+**The board does all the wireless, trading included.** It finds the room, joins it,
+decrypts everything and runs the session, for the page just as for a real Game Boy
 Advance. The page asks to stand in for the adapter (`LDN_ADAPTER host`) and answers the
-plain frames the board passes on. So the page holds no key, decrypts nothing, and needs
-no firmware beyond the 2.0 the rest of the page already installs.
+plain frames the board passes on, so it holds no key and needs no firmware beyond what
+it installs.
 
 ## Running it
 
@@ -233,7 +226,7 @@ port.onLinkUp = (leader) => leader.greet().sit().open(party);
 installFakeSerial(port);
 ```
 
-then use the page as usual: connect in step 1, then trade under *Just the Switch*.
+then use the page as usual: connect in step 1, then trade under *PC to Switch*.
 `port.leader` takes the Switch's next moves, such as `command(0xdddd, 0)` to choose its
 first Pokémon (the values are `LINK` in `js/trade/engine.js`), and `port.leaveRoom()`
 ends the visit. The stand-in keeps its pace in a tab that is not on show, which the page
