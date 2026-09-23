@@ -11,17 +11,43 @@ const ESPRESSIF_VENDOR_ID = 0x303a;
 
 // port: a closed SerialPort. Resolves with { chip, version } once the board has been
 // reset into the new firmware; the port is closed again either way.
-export async function flashBridge(port, manifest, { onStatus = () => {}, onProgress = () => {}, onLog = () => {}, eraseAll = false } = {}) {
+export async function flashBridge(port, manifest, options = {}) {
+    // The rate means nothing on the chip's own USB port, and asking for a change there
+    // only closes and reopens it. A UART bridge is worth speeding up, but not every
+    // board keeps up with 460800: the chip agrees to the change and the next packet
+    // arrives corrupted. Such a board is written at the ROM's rate instead.
+    const native = safeInfo(port).usbVendorId === ESPRESSIF_VENDOR_ID;
+    return withSlowerRetry(native ? [115200] : [460800, 115200], (baudrate, seen) => flashAt(port, manifest, baudrate, seen, options), options);
+}
+
+// Tries the rates in turn. Only a failure after the chip had switched to a faster rate
+// is a speed problem, and only then is the next rate tried.
+export async function withSlowerRetry(rates, attempt, { onStatus = () => {}, onLog = () => {} } = {}) {
+    for (let i = 0; i < rates.length; i++) {
+        const seen = { faster: false };
+        try {
+            return await attempt(rates[i], seen);
+        } catch (error) {
+            if (i === rates.length - 1 || !seen.faster) throw error;
+            onLog(`the board did not keep up at ${rates[i]} baud (${error.message}); trying again at ${rates[i + 1]}`);
+            onStatus('The board could not keep up at high speed. Trying again slower…');
+        }
+    }
+    return undefined;
+}
+
+async function flashAt(port, manifest, baudrate, seen, { onStatus = () => {}, onProgress = () => {}, onLog = () => {}, eraseAll = false } = {}) {
     const terminal = {
         clean() {},
         write() {},
-        writeLine(text) { if (text && !text.startsWith('Writing at')) onLog(text); },
+        writeLine(text) {
+            if (!text || text.startsWith('Writing at')) return;
+            if (text.startsWith('Changing baudrate')) seen.faster = true;
+            onLog(text);
+        },
     };
-    // The rate means nothing on the chip's own USB port, and asking for a change there
-    // only closes and reopens it; a UART bridge is worth speeding up.
-    const native = safeInfo(port).usbVendorId === ESPRESSIF_VENDOR_ID;
     const transport = new Transport(port, false);
-    const loader = new ESPLoader({ transport, baudrate: native ? 115200 : 460800, romBaudrate: 115200, terminal, debugLogging: false });
+    const loader = new ESPLoader({ transport, baudrate, romBaudrate: 115200, terminal, debugLogging: false });
     try {
         onStatus('Connecting to the chip…');
         await loader.main();
