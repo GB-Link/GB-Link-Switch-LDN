@@ -112,8 +112,10 @@ static void export_advertisement(void)
     fflush(stdout);
 }
 
+static void note_rssi(int8_t rssi);
+
 static void remember_action(const uint8_t *header, const uint8_t *body,
-                            size_t body_len, bool from_roc, uint8_t channel)
+                            size_t body_len, bool from_roc, uint8_t channel, int8_t rssi)
 {
     if (header == NULL || body == NULL || body_len == 0) {
         return;
@@ -123,6 +125,7 @@ static void remember_action(const uint8_t *header, const uint8_t *body,
     const bool ldn = body_len >= sizeof(ldn_prefix) &&
                      memcmp(header + 4, broadcast, sizeof(broadcast)) == 0 &&
                      memcmp(body, ldn_prefix, sizeof(ldn_prefix)) == 0;
+    if (ldn) note_rssi(rssi);
     portENTER_CRITICAL(&s_stats_lock);
     if (ldn && body_len <= sizeof(s_advertisement.body)) {
         memcpy(s_advertisement.body, body, body_len);
@@ -187,8 +190,7 @@ static void promiscuous_rx(void *buffer, wifi_promiscuous_pkt_type_t type)
     /* Management type 0, action subtype 13, little-endian frame control. */
     /* sig_len includes the four-byte FCS, which is not action payload. */
     if (length >= 29 && (frame[0] & 0xfcU) == 0xd0U) {
-        note_rssi(packet->rx_ctrl.rssi);
-        remember_action(frame, frame + 24, length - 28, false, packet->rx_ctrl.channel);
+        remember_action(frame, frame + 24, length - 28, false, packet->rx_ctrl.channel, packet->rx_ctrl.rssi);
     }
 }
 

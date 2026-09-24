@@ -4,7 +4,7 @@
 // one view of their state: a line of status, perhaps a hint, and at most one thing to
 // press. Everything rarely needed sits under a fold.
 
-import { EspDevice, ESP_FILTERS, FAST_BAUD, reopenPort, sleep } from './esp.js';
+import { EspDevice, ESP_FILTERS, FAST_BAUD, newer, reopenPort, sleep } from './esp.js';
 import { GbLinkSerial, GbLinkUsb, BOOTROM_VENDOR_ID, GBLINK_VENDOR_ID } from './gblink.js';
 import { Bridge } from './bridge.js';
 import { parseProdKeys } from './keys.js';
@@ -48,6 +48,7 @@ const state = {
     replacingKeys: false,
     session: null,
     polls: 0,
+    signal: null,           // the Switch's signal in dBm, from firmware 2.0.2 on
     pollTimer: null,
 
     adapter: null,
@@ -132,15 +133,6 @@ async function choose(request) {
         if (error?.name !== 'NotFoundError') log('page', `the browser would not show its device list: ${describe(error)}`);
         return null;
     }
-}
-
-function newer(candidate, than) {
-    const a = String(candidate).split('.').map(Number);
-    const b = String(than).split('.').map(Number);
-    for (let i = 0; i < Math.max(a.length, b.length); i++) {
-        if ((a[i] ?? 0) !== (b[i] ?? 0)) return (a[i] ?? 0) > (b[i] ?? 0);
-    }
-    return false;
 }
 
 // ---------------------------------------------------------------- ESP32 board: what to show
@@ -528,18 +520,25 @@ async function pollSession() {
     if (!esp?.attached || state.espPhase !== 'idle' || state.trade) return;
     try {
         state.session = await esp.bridgeStatus();
-        if (state.polls++ % 3 === 0) {
-            const radio = await esp.radio();
-            $('esp-signal').textContent = radio && radio.frames > 0 ? `${radio.average} dBm (${signalWord(radio.average)})` : 'No room in range';
-        }
+        if (state.polls++ % 3 === 0) state.signal = await esp.signal();
+        $('esp-signal').textContent = roomWord(esp, state.session, state.signal);
     } catch {
         return;   // restarting; the next poll will do
     }
     renderSession();
 }
 
-function signalWord(dbm) {
-    return dbm >= -55 ? 'strong' : dbm >= -70 ? 'good' : dbm >= -80 ? 'weak' : 'very weak';
+// The board joins a room as soon as it reads one and stops reporting advertisements
+// while it is in, so the bridge's state comes first; while it scans, its reports say
+// whether a room is heard at all, and whether the keys can read it.
+function roomWord(esp, status, signal) {
+    const dbm = signal === null || signal === undefined ? '' : `, ${signal} dBm`;
+    if (status && status.state === 'run') return `joined${dbm}`;
+    if (status && status.state !== 'scan' && status.state !== 'stopped' && status.state !== 'idle') return `joining${dbm}`;
+    const now = Date.now();
+    if (now - esp.readAt < 10000) return `heard and read${dbm}`;
+    if (now - esp.heardAt < 5000) return `heard, but the keys cannot read it${dbm}`;
+    return 'not heard';
 }
 
 function renderSession() {
@@ -563,6 +562,10 @@ function renderSession() {
         if (status.state === 'stopped' || status.state === 'idle') {
             headline = 'The bridge is stopped.';
             hint = 'Unplug the board and plug it back in.';
+            tone = 'warn';
+        } else if (status.state === 'scan' && state.esp.hearsUnreadableRoom) {
+            headline = 'The board hears a Switch’s room but cannot read it.';
+            hint = 'The keys it holds do not match. Replace the keys in step 1 with a prod.keys from your own Switch.';
             tone = 'warn';
         } else if (status.state === 'scan') {
             headline = 'Looking for a FireRed or LeafGreen room…';

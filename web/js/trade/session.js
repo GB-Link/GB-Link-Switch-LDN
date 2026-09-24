@@ -153,7 +153,10 @@ export class TradeSession {
         let status = null;
         try { status = await this.device.bridgeStatus(); } catch { return null; }
         if (!status) return null;
-        if (status.state === 'scan') return 'The board is looking for a FireRed or LeafGreen room. Open the Trade Center on the Switch as the group leader.';
+        if (status.state === 'scan') {
+            if (this.device.hearsUnreadableRoom) return 'The board hears a Switch\'s room but cannot read it: the keys it holds do not match. Replace the keys in step 1 with a prod.keys from your own Switch.';
+            return 'The board is looking for a FireRed or LeafGreen room. Open the Trade Center on the Switch as the group leader.';
+        }
         if (status.state === 'stopped' || status.state === 'idle') return 'The board is not looking for a room. Unplug it and plug it back in.';
         if (status.state !== 'run') return 'The board is joining the Switch’s room.';
         return link.room === null ? 'In the room. Waiting for it to be offered for trading.' : 'In the room, joining the trade.';

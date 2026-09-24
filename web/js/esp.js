@@ -43,6 +43,16 @@ function ratesFor(port) {
 // device. Replugging the board resets the settings.
 export const PORT_LOST_ADVICE = 'The browser lost the port the moment it opened it. On Linux this happens after another serial program has used the port: unplug the board and plug it back in, then connect again.';
 
+// Whether version string `candidate` is newer than `than` (dotted numbers).
+export function newer(candidate, than) {
+    const a = String(candidate).split('.').map(Number);
+    const b = String(than).split('.').map(Number);
+    for (let i = 0; i < Math.max(a.length, b.length); i++) {
+        if ((a[i] ?? 0) !== (b[i] ?? 0)) return (a[i] ?? 0) > (b[i] ?? 0);
+    }
+    return false;
+}
+
 export class EspDevice extends EventTarget {
     constructor() {
         super();
@@ -60,6 +70,8 @@ export class EspDevice extends EventTarget {
         this.attaching = false;
         this.onAdapterFrame = null;   // (Uint8Array) => void, kind 6
         this.bannerTail = new Uint8Array(0);
+        this.heardAt = 0;             // a Switch's room advertisement was received (LDN_ADV)
+        this.readAt = 0;              // and one was decoded (LDN_ROOM)
         this.bannerSeen = false;
         this.readEnded = false;
         this.bootText = '';           // what the chip printed while no session was up
@@ -263,7 +275,25 @@ export class EspDevice extends EventTarget {
             }
             return;
         }
+        if (text.startsWith('LDN_ADV ')) this.heardAt = Date.now();
+        else if (text.startsWith('LDN_ROOM ')) this.readAt = Date.now();
         if (text && text !== 'LDN_DONE') this.dispatchEvent(new CustomEvent('log', { detail: text }));
+    }
+
+    // Advertisements keep arriving (four a second while a room is up) but none decodes:
+    // the board hears a room its keys cannot read.
+    get hearsUnreadableRoom() {
+        const now = Date.now();
+        return now - this.heardAt < 5000 && now - this.readAt > 10000;
+    }
+
+    // The Switch's signal over the last few seconds, in dBm, or null when its room was
+    // not heard. Firmware before 2.0.2 counted every wireless frame in this reading.
+    async signal() {
+        if (!this.info || newer('2.0.2', this.info.version)) return null;
+        const lines = await this.command('LDN_RF', 1500);
+        const match = lines.find((l) => l.startsWith('LDN_RF '))?.match(/frames=(\d+) avg=(-?\d+)/);
+        return match && Number(match[1]) > 0 ? Number(match[2]) : null;
     }
 
     // One request at a time, as the protocol requires. Resolves with the reply lines,
@@ -344,13 +374,6 @@ export class EspDevice extends EventTarget {
             if (at > 0) fields[part.slice(0, at)] = part.slice(at + 1);
         }
         return fields;
-    }
-
-    async radio() {
-        const lines = await this.command('LDN_RF', 1500);
-        const line = lines.find((l) => l.startsWith('LDN_RF '));
-        const match = line?.match(/frames=(-?\d+) avg=(-?\d+)/);
-        return match ? { frames: Number(match[1]), average: Number(match[2]) } : null;
     }
 
     async adapterPort() {
