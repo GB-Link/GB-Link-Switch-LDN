@@ -50,9 +50,11 @@ only the ESP32 board.
   wireless is encrypted with keys from the console, so the board needs four of them.
   The page reads the file and sends those four values to the board over USB. Nothing is
   uploaded anywhere.
-- For GBA to Switch: a GB-Link adapter and a GBA with FireRed, LeafGreen or Emerald.
-  The page installs the adapter's firmware, from
-  <https://github.com/GB-Link/GBLink-Firmware>. Emerald can trade once the Switch's game is
+- For GBA to Switch: a GB-Link adapter, a **Game Boy Color link cable** and a GBA with
+  FireRed, LeafGreen or Emerald. A Game Boy Advance cable will not work: it does not
+  connect both data lines at once, and the wireless adapter mode needs both. The page
+  installs the adapter's firmware, from <https://github.com/GB-Link/GBLink-Firmware>.
+  Emerald can trade once the Switch's game is
   far enough along to link with Ruby, Sapphire and Emerald (Celio's machine on One
   Island fixed), the same rule as between two GBAs.
 
@@ -63,8 +65,8 @@ boards.
 
 1. **ESP32 board.** Plug it in, press *Install firmware*, then drop your `prod.keys` on
    the page.
-2. **GB-Link adapter.** Plug it in and install the wireless firmware. Skip this for
-   PC to Switch.
+2. **GB-Link adapter.** Plug it in and install the wireless firmware. It connects to the
+   GBA with a Game Boy Color cable. Skip this for PC to Switch.
 3. **Play.** Connect the boards with three wires (the page shows which pins) and power
    them from anything, or leave both on USB and press *Start* so the page carries the
    link.

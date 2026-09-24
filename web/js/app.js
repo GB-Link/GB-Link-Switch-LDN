@@ -551,7 +551,7 @@ function renderSession() {
     let tone = '';
     if (state.resetLoop && state.adapter) {
         headline = 'The game keeps restarting the wireless adapter.';
-        hint = 'On the GBA this looks like a freeze. It usually comes down to the link cable: try another one, and make sure the adapter has the firmware from step 2.';
+        hint = 'On the GBA this looks like a freeze. It is usually the link cable: it must be a Game Boy Color cable, not a Game Boy Advance one, and the adapter needs the firmware from step 2.';
         tone = 'warn';
     } else if (state.keys && !state.keys.complete) {
         headline = 'The board needs its keys.';

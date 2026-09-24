@@ -122,6 +122,10 @@ back: it only reports which of the four it holds.
 
 ### GB-Link adapter
 
+The adapter sits in the GBA's link port on a Game Boy Color cable. A Game Boy Advance
+cable does not connect both data lines at once, and the wireless adapter mode, the only
+full-duplex mode the adapter has, needs both; the card says so.
+
 The adapter answers a statistics command (`0x4c`) only when its firmware has the
 wireless adapter mode, which is how the page tells. *Install firmware* walks through
 four steps on the card: the page restarts the adapter in its USB bootloader, you pick
@@ -145,7 +149,7 @@ the port again, so consecutive sessions need no clicks. Keep the tab open and vi
 while playing. While it carries the link the page also watches how often the game resets
 the adapter: a game that cannot get a command through does so about four times a second
 and blocks meanwhile, which on the GBA is a freeze with no message, so the page says
-what is happening and to try another link cable.
+what is happening and that the cable must be a Game Boy Color one.
 
 A chip's own USB port ignores the baud rate. A board behind a USB-UART bridge (the
 original ESP32) runs its console at 921600 from the first line it prints, because a

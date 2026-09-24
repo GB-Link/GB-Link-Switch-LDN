@@ -170,10 +170,12 @@ firmware starts is still at 115200.
 - **The GBA freezes when the game starts the adapter** (talking to the Direct Corner
   receptionist, or choosing to join or lead a group). The game cannot get a command
   through, resets the adapter and tries again about four times a second, and blocks
-  while it does. This mode is the only one where the GBA clocks the link at 2 MHz,
-  and some link cables are too slow or too noisy for how earlier builds of the
-  GB-Link mode read them. Update the adapter's firmware; if it still happens, try
-  another cable. The web client says so while it carries the link.
+  while it does. The cable must be a Game Boy Color one: a Game Boy Advance cable does
+  not connect both data lines at once, and this mode is full duplex. It is also the
+  only mode where the GBA clocks the link at 2 MHz, and some cables are too slow or
+  too noisy for how earlier builds of the GB-Link mode read them. Update the adapter's
+  firmware; if it still happens, try another cable. The web client says so while it
+  carries the link.
 - **The GBA lists the Switch but says the trainer is busy, or sits on "waiting for
   response".** The Switch is holding a dead session from an earlier run. Close the room
   on the Switch and host it again.
