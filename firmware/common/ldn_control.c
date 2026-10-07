@@ -61,6 +61,25 @@ void ldn_control_sniff(const unsigned char *frame, size_t length)
         atomic_fetch_add(&s_air_data, 1);
 }
 
+/* Why the chip last started, for the host: a brownout restart means its supply dipped. */
+static const char *reset_name(esp_reset_reason_t reason)
+{
+    switch (reason) {
+    case ESP_RST_POWERON: return "power-on";
+    case ESP_RST_EXT: return "external";
+    case ESP_RST_SW: return "software";
+    case ESP_RST_PANIC: return "panic";
+    case ESP_RST_INT_WDT: return "interrupt-watchdog";
+    case ESP_RST_TASK_WDT: return "task-watchdog";
+    case ESP_RST_WDT: return "watchdog";
+    case ESP_RST_DEEPSLEEP: return "deep-sleep";
+    case ESP_RST_BROWNOUT: return "brownout";
+    case ESP_RST_USB: return "usb";
+    case ESP_RST_JTAG: return "jtag";
+    default: return "other";
+    }
+}
+
 /* Host frames reach the Pico verbatim; both ends use the same 'GB' framing. */
 /* Builds the hex text so a line is one printf; in binary mode each printf is one frame. */
 static const char *hex_bytes(const uint8_t *bytes, uint8_t count)
@@ -296,6 +315,7 @@ static void command(const char *line)
     if (!strcmp(line, "LDN_INFO")) {
         printf("LDN_INFO frlg-ldn-bridge %s chip=%s transport=%s\n", BRIDGE_VERSION, CONFIG_IDF_TARGET,
                bridge_transport_name());
+        printf("LDN_BOOT reset=%s\n", reset_name(esp_reset_reason()));
         return;
     }
     if (!strcmp(line, "LDN_RF")) {

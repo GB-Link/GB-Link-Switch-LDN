@@ -31,6 +31,15 @@ const KEY_NAMES = {
     master12: 'master_key_12',
 };
 const POLL_MS = 5000;
+// Why the board restarted, when it was not its own doing (after each session it restarts on
+// purpose, as "software").
+const RESTART_REASONS = {
+    brownout: 'the board restarted because its power dipped (brownout), most likely as its radio started sending. Try another USB cable or port, a powered hub, or a different board.',
+    panic: 'the board restarted after a crash.',
+    'interrupt-watchdog': 'the board restarted: it stopped responding (watchdog).',
+    'task-watchdog': 'the board restarted: it stopped responding (watchdog).',
+    watchdog: 'the board restarted: it stopped responding (watchdog).',
+};
 
 const state = {
     manifest: null,
@@ -327,6 +336,8 @@ async function adoptEsp(device) {
     });
     device.addEventListener('reattached', () => {
         if (state.esp !== device) return;
+        const why = RESTART_REASONS[device.info?.reset];
+        if (why) log('board', why);
         state.adapter?.quiet(15000);
         refreshEsp();
     });

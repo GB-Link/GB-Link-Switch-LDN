@@ -182,6 +182,8 @@ export class EspDevice extends EventTarget {
             await this.command(`LDN_BEGIN ${this.session.toString(16).padStart(8, '0')}`, 2000, true);
             const info = await this.command('LDN_INFO', 2000, true);
             this.info = parseInfo(info.find((line) => line.startsWith('LDN_INFO')) ?? '');
+            const boot = info.map((line) => line.match(/^LDN_BOOT reset=(\S+)/)).find(Boolean);
+            if (this.info && boot) this.info.reset = boot[1];
             this.attached = true;
         } finally {
             this.attaching = false;
