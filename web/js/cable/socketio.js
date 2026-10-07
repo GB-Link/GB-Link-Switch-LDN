@@ -83,13 +83,26 @@ export class SocketIo extends EventTarget {
         });
     }
 
+    // request(), sent again while the server does not answer (as Celio-Client's
+    // emitWithRetry): the server drops what it already has by uuid or sequence.
+    async requestWithRetry(event, arg, { retries = 5, timeoutMs = 1000, backoffMs = 100 } = {}) {
+        for (let attempt = 1; ; attempt++) {
+            try {
+                return await this.request(event, arg, timeoutMs);
+            } catch (error) {
+                if (!this.connected || attempt > retries) throw error;
+                await new Promise((resolve) => setTimeout(resolve, backoffMs * attempt));
+            }
+        }
+    }
+
     onEvent(text) {
         const bracket = text.indexOf('[');
         const id = bracket > 0 ? Number(text.slice(0, bracket)) : null;
         let packet;
         try { packet = JSON.parse(text.slice(bracket)); } catch { return; }
         const [event, ...args] = packet;
-        // The server waits for an acknowledgement before it sends the next one.
+        // The server sends an event again until it is acknowledged.
         if (id !== null) this.ws.send(`43${id}${JSON.stringify([true])}`);
         this.handlers.get(event)?.(...args);
     }
