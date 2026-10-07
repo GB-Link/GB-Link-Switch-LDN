@@ -53,4 +53,14 @@ config BRIDGE_WIFI_MAX_TX_POWER
         Some ESP32-C3 boards (the C3 SuperMini among them) send garbled frames at full
         power: they hear the Switch's room but their join is never answered. The Switch
         sits within a metre or two, so a low cap costs nothing.
+config BRIDGE_HOST_MAX_TX_POWER
+    int "Wi-Fi transmit power cap while hosting a room, in 0.25 dBm steps (0: none)"
+    range 0 84
+    default 60
+    help
+        Hosting sends the room's long advertisements ten times a second at the slowest
+        rate, so the radio draws its peak current for much longer than when joining a
+        room. On boards with a weak supply that dips the voltage until the brownout
+        detector resets the chip. The Switch sits within a metre or two, so 15 dBm is
+        plenty.
 endmenu

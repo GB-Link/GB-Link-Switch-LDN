@@ -631,6 +631,11 @@ bool ldn_host_start(const ldn_host_config_t *cfg, ldn_host_scratch_t *scratch)
     }
     if (esp_wifi_start() != ESP_OK) { printf("LDN_HOST_ERROR START\n"); return false; }
     bridge_wifi_tx_power();
+#if CONFIG_BRIDGE_HOST_MAX_TX_POWER
+    int8_t power = 0;
+    if (esp_wifi_get_max_tx_power(&power) != ESP_OK || power > CONFIG_BRIDGE_HOST_MAX_TX_POWER)
+        esp_wifi_set_max_tx_power(CONFIG_BRIDGE_HOST_MAX_TX_POWER);
+#endif
     esp_wifi_set_ps(WIFI_PS_NONE);
 
     esp_netif_dhcps_stop(s_host.ap_netif);
