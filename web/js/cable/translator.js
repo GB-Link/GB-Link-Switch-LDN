@@ -678,7 +678,7 @@ export class CableTranslator {
             return;
         }
         if (this.battleBlocks) {
-            // Battle data, relayed as is.
+            this.log(`leader's battle block of ${size} bytes received`);
         } else if (count === 9) {
             // Trainer card: the first 0x38 bytes are the same in every Gen 3 game.
             this.log('leader\'s trainer card received');

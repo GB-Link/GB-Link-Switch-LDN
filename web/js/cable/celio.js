@@ -94,7 +94,9 @@ export class CelioLink {
         while (this.running && this.inFlight < DATA_IN_FLIGHT && this.outgoing.length) {
             const next = this.outgoing.shift();
             this.inFlight++;
-            this.socket.requestWithRetry('deviceData', [next])
+            // The other side plays sequences in order and cannot skip one: no giving up while
+            // the socket is up.
+            this.socket.requestWithRetry('deviceData', [next], { retries: Infinity, stop: () => !this.running })
                 .catch((error) => this.log(`the server did not take data: ${error.message}`))
                 .finally(() => { this.inFlight--; this.fillData(); });
         }

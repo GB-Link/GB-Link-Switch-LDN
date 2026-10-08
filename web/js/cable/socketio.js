@@ -85,13 +85,13 @@ export class SocketIo extends EventTarget {
 
     // request(), sent again while the server does not answer (as Celio-Client's
     // emitWithRetry): the server drops what it already has by uuid or sequence.
-    async requestWithRetry(event, arg, { retries = 5, timeoutMs = 1000, backoffMs = 100 } = {}) {
+    async requestWithRetry(event, arg, { retries = 5, timeoutMs = 1000, backoffMs = 100, stop = null } = {}) {
         for (let attempt = 1; ; attempt++) {
             try {
                 return await this.request(event, arg, timeoutMs);
             } catch (error) {
-                if (!this.connected || attempt > retries) throw error;
-                await new Promise((resolve) => setTimeout(resolve, backoffMs * attempt));
+                if (!this.connected || attempt > retries || stop?.()) throw error;
+                await new Promise((resolve) => setTimeout(resolve, Math.min(backoffMs * attempt, 1000)));
             }
         }
     }

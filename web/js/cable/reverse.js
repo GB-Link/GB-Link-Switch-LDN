@@ -240,6 +240,7 @@ export class ReverseTranslator {
             return;
         }
         const size = this.inBattle ? count * 12 : sizeFromCount(count);
+        if (this.inBattle) this.log(`the Switch's battle block of ${size} bytes received`);
         this.cablePushBlock(data.subarray(0, size), size);
     }
 
@@ -659,6 +660,7 @@ export class ReverseTranslator {
         const size = request !== null ? sizeFromRequest(request) : data.length;
         const block = new Uint8Array(size === MENU_BLOCK_SIZE && !this.inBattle ? MENU_BLOCK_SENT : size);
         block.set(data.subarray(0, size));
+        if (this.inBattle) this.log(`sending a battle block of ${size} bytes`);
         this.toSwitch(() => this.leader.sendBlock(block));
     }
 
