@@ -289,9 +289,10 @@ export class CelioSession extends EventTarget {
     get leading() { return this.role === 'child'; }
     get needsRoom() { return this.leading && this.activity === null; }
     get linked() { return this.leading ? Boolean(this.leader?.linked && this.translator?.parentLP) : Boolean(this.translator?.linked); }
-    get tradeReady() { return !this.leading && Boolean(this.translator?.haveRubyLP); }
     get cableOpen() { return Boolean(this.link?.connected); }
     get switchNotReady() { return !this.leading && Boolean(this.translator?.hostNotReady); }
+    get switchGroupOpen() { return !this.leading && Boolean(this.translator?.groupSeen); }
+    get switchJoining() { return !this.leading && Boolean(this.translator?.joined); }
     get switchJoined() { return Boolean(this.leader?.joined); }
     get switchKnown() { return this.leading && Boolean(this.translator?.ready); }
     get switchLeft() { return this.leader?.state === 'closed'; }
@@ -375,6 +376,7 @@ export class CelioSession extends EventTarget {
                 connect: (devid) => toBoard(command(RFU.CONNECT_REQ, devid)),
                 disconnect: () => toBoard(command(RFU.DISCONNECT, 0)),
                 log: (message) => this.log(message),
+                holdJoin: true,
             });
             translator.onLinked = () => this.changed();
             translator.bypassNationally = this.bypassNationally;
@@ -388,7 +390,9 @@ export class CelioSession extends EventTarget {
             gameCommand: (words) => this.translator?.gameCommand(words),
             nextCommand: () => this.translator?.nextCommand() ?? null,
             reset: () => this.translator?.cableReset(),
-            ready: () => (master ? Boolean(this.translator?.ready) : true),
+            // Each side is ready once its Switch is: leading a group the page has seen, or
+            // waiting in the page's group. Joining, and the player exchange, come after.
+            ready: () => Boolean(master ? this.translator?.ready : this.translator?.readyToLink),
         };
     }
 

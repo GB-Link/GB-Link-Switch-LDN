@@ -91,6 +91,8 @@ export class ReverseTranslator {
         this.parentSeen = null;      // the other GBA's latest LinkPlayer, refused or not
         this.lpPending = false;      // this side's LinkPlayer waits for the other GBA's
         this.lpWait = 0;
+        this.exchangeDue = false;    // the Switch waits in the group for the player exchange
+        this.parentEarly = null;     // the other GBA's first LinkPlayer, before the Switch's
         this.switchBlockAt = -Infinity;  // leader frame of the Switch's last whole block
         this.requestAt = 0;          // leader frame the request in this.pull went out, 0 not yet
         this.rerequests = 0;
@@ -141,12 +143,15 @@ export class ReverseTranslator {
         leader.keySource = () => (this.keysToSwitch ? this.parentKeys.pop() : null);
         leader.onTick = () => this.releaseDeferred();
 
-        this.onReady = null;         // the Switch's player is known: the cable can link
+        this.onReady = null;         // the Switch's player is known
         this.onOtherChoice = null;   // (linkType) the other GBA chose another room
         this.onRefused = null;       // (reason) the other GBA cannot trade with the Switch's game
     }
 
-    get ready() { return Boolean(this.switchLP); }
+    // Ready once the Switch waits in the group ("Awaiting other members!"), where it waits for
+    // as long as a person takes. Its player exchange starts only when the other GBA's player
+    // comes: a Switch left waiting partway through the exchange gives up.
+    get ready() { return this.leader.linked; }
     get battle() { return this.activity !== 4; }
 
     // The group the Switch joins, named for the other player once known.
@@ -161,7 +166,15 @@ export class ReverseTranslator {
     // ---- the Switch (wireless child)
 
     switchJoined() {
-        this.log('the Switch is in the group: exchanging players');
+        this.log('the Switch is in the group: ready for the other GBA');
+        this.exchangeDue = true;
+        this.maybeStartExchange();
+    }
+
+    maybeStartExchange() {
+        if (!this.exchangeDue || !(this.parentEarly || this.parentLP)) return;
+        this.exchangeDue = false;
+        this.log('the other GBA\'s player is here: exchanging players with the Switch');
         this.leader.playerIds();
         this.pull = 0;
         this.leader.request(0);
@@ -198,8 +211,13 @@ export class ReverseTranslator {
             this.pull = null;
             if (!this.switchLP) {
                 this.switchLP = data.slice(0, LP_SIZE);
-                this.log('the Switch player is known: ready for the other GBA');
+                this.log('the Switch player is known');
                 this.onReady?.();
+            }
+            if (this.parentEarly) {
+                const early = this.parentEarly;
+                this.parentEarly = null;
+                this.parentBlock(early);
             }
             this.maybeLeaderLP();
             return;
@@ -562,7 +580,8 @@ export class ReverseTranslator {
     // The parent's 0x2222: everyone sends a LinkPlayer with their own link type.
     linkUp() {
         this.expectParentLP = true;
-        if (!this.switchLP) { this.log('the other GBA linked before the Switch\'s player was known'); return; }
+        // The Switch's player comes once the other GBA's has started its exchange.
+        if (!this.switchLP) { this.lpPending = true; this.lpWait = 0; return; }
         // On the first link the other GBA's LinkPlayer decides how the Switch's is shown.
         // A GBA parent sends its own with the 0x2222 and waits well past this delay.
         if (!this.parentLP) { this.lpPending = true; this.lpWait = 0; return; }
@@ -570,6 +589,7 @@ export class ReverseTranslator {
     }
 
     sendOwnLP() {
+        if (!this.switchLP) return;
         this.lpPending = false;
         this.live = true;
         this.cablePushBlock(this.forParent(), LP_SIZE);
@@ -578,6 +598,12 @@ export class ReverseTranslator {
 
     parentBlock(data) {
         if (this.expectParentLP && isLinkPlayer(data)) {
+            // Its checks need the Switch's player, which its arrival lets the Switch send.
+            if (!this.switchLP) {
+                this.parentEarly = data.slice(0, LP_SIZE);
+                this.maybeStartExchange();
+                return;
+            }
             this.expectParentLP = false;
             const type = le16(data, LP_LINK_TYPE);
             this.parentSeen = data.slice(0, LP_SIZE);

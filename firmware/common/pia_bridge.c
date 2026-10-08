@@ -86,6 +86,7 @@ static struct
        follows the GBA. */
     uint16_t group_devid[GROUP_COUNT];
     uint8_t beacon[GROUP_COUNT][24];
+    uint8_t room_activity;              /* the Switch's group, from its room record; 0 unknown */
     int group;                          /* the one the GBA connected to, -1 none */
     int frames_to_gba, frames_from_gba, to_gba_lost;
     int64_t session_ms;                 /* when the Switch session began, for the summary */
@@ -169,6 +170,7 @@ static void send_beacon(void)
 {
     for (int k = 0; k < GROUP_COUNT; ++k)
     {
+        if (g.room_activity && kGroupActivity[k] != g.room_activity) continue;
         uint8_t f[36] = {0};
         memcpy(f, kRfu1, 4);
         bin_wb32(f + 4, RFU1_BROADCAST);
@@ -931,6 +933,10 @@ void pia_bridge_poll(void)
         const bool have_record = read_room_record(g.net.app_data, g.net.app_data_len, record);
         for (int k = 0; k < GROUP_COUNT; ++k)
             build_beacon(g.beacon[k], host_name, have_record ? record : NULL, kGroupActivity[k]);
+        g.room_activity = 0;
+        if (have_record)
+            for (int k = 0; k < GROUP_COUNT; ++k)
+                if ((bin_u16(record + 16) & 0x7f) == kGroupActivity[k]) g.room_activity = kGroupActivity[k];
         uint8_t host_mac[6];
         memcpy(host_mac, g.net.host, 6);
         pia_link_init(&g.s.link, g.net.ssid, g.our_mac, host_mac, g.our_ip, g.host_ip,

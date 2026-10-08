@@ -64,7 +64,10 @@ const HOST_KEY_LAG = 12;
 const AIR = { SEARCH: 0, CONNECTING: 1, NI: 2, UNI: 3 };
 // Union-room activities, from the link type the game opens its Cable Club link with.
 const ACTIVITY = { TRADE: 4, BATTLE_SINGLE: 1, BATTLE_DOUBLE: 2 };
-const LINKTYPE = { SINGLE_BATTLE: 0x2233, DOUBLE_BATTLE: 0x2244, BATTLE: 0x2211 };
+const LINKTYPE = { SINGLE_BATTLE: 0x2233, DOUBLE_BATTLE: 0x2244, BATTLE: 0x2211, TRADE_SETUP: 0x1133 };
+// holdJoin: the cable packets the other GBA's LinkPlayer has before the Switch's goes first.
+// Another page sends its own only once it has this one; a GBA sends at once.
+const LP_EARLY_PACKETS = 20;
 const LP_ID_OFFSET = 16 + 0x18;
 const LINK_PLAYER_SIZE = 28;         // struct LinkPlayer, as the Switch sends it at a battle's start
 // Colosseum: in the room, the game closing its link for the battle, in the battle, and the
@@ -339,13 +342,25 @@ function niNext(ni) {
 }
 
 const slotIdle = (slot) => slot.every((b) => b === 0);
+// "CELIO" in the game's charset: the name joined with before the other player is known.
+const PLACEHOLDER_NAME = [0xbd, 0xbf, 0xc6, 0xc3, 0xc9, 0xff];
+const VERSION_FIRE_RED = 4;
 const slotWords = (slot) => Array.from({ length: 7 }, (_, i) => le16(slot, i * 2));
 
 export class CableTranslator {
     // send(payload): one child frame for the board (LLSF header and data).
     // connect(devid) / disconnect(): the board's join and leave.
-    constructor({ send, connect, disconnect, log = () => {} }) {
+    // holdJoin (over Celio): the Switch's group is found at once but joined only once the
+    // cable opens (cableReset), as "CELIO", in whichever room the Switch opened; the other
+    // player is known only after that.
+    constructor({ send, connect, disconnect, log = () => {}, holdJoin = false }) {
         this.sendFrame = send;
+        this.holdJoin = holdJoin;
+        this.joinAllowed = !holdJoin;
+        this.groupSeen = false;      // the Switch's group is open (holdJoin: this side is ready)
+        this.roomsSeen = new Set();  // the rooms the board offers the Switch's room as
+        this.severalRooms = false;
+        this.lpPullWaiting = false;  // the leader pulled the other player's LinkPlayer before it came
         this.connectRoom = connect;
         this.disconnectRoom = disconnect;
         this.log = log;
@@ -434,6 +449,9 @@ export class CableTranslator {
     }
 
     get linked() { return this.link === AIR.UNI; }
+    // holdJoin: ready once the Switch's group is open; with a board that offers several, as
+    // before (joined once the other player's room is known).
+    get readyToLink() { return this.groupSeen || this.severalRooms; }
     // The cable game's version (Ruby 2, Sapphire 1, Emerald 3, FireRed 4, LeafGreen 5).
     get gameVersion() { return this.rubyLP[LP_VERSION_OFFSET]; }
     // Ruby and Sapphire have no wireless and are shown to the Switch as an Emerald; the
@@ -500,15 +518,25 @@ export class CableTranslator {
 
     // The leader's LinkPlayer with the game's own link type: the cable club accepts the
     // exchange only when every player reports the same one.
-    deliverLinkPlayerToGame() {
-        if (!this.haveHostLP || !this.sessionRubyLP || this.p0LPDelivered) return;
+    // early: before the other GBA's, with the link type of the Switch's room and the first spot.
+    deliverLinkPlayerToGame(early = false) {
+        if (!this.haveHostLP || this.p0LPDelivered || (!this.sessionRubyLP && !early)) return;
         const block = this.hostLP.slice();
-        block.set(this.rubyLP.subarray(LP_LINK_TYPE_OFFSET, LP_LINK_TYPE_OFFSET + 4), LP_LINK_TYPE_OFFSET);
+        if (early) {
+            const type = this.activity === ACTIVITY.BATTLE_SINGLE ? LINKTYPE.SINGLE_BATTLE
+                : this.activity === ACTIVITY.BATTLE_DOUBLE ? LINKTYPE.DOUBLE_BATTLE : LINKTYPE.TRADE_SETUP;
+            put16(block, LP_LINK_TYPE_OFFSET, type);
+            put16(block, LP_LINK_TYPE_OFFSET + 2, 0);
+            if (this.battle) block[LP_ID_OFFSET] = 0;
+            this.log('the Switch\'s LinkPlayer goes to the other GBA first');
+        } else {
+            block.set(this.rubyLP.subarray(LP_LINK_TYPE_OFFSET, LP_LINK_TYPE_OFFSET + 4), LP_LINK_TYPE_OFFSET);
+        }
         // Emerald's cable club trades with a FireRed/LeafGreen player only when its own is
         // Champion and the other has finished the Sevii Islands story. With the bypass on, a
         // Champion's game gets the Switch player with that progress; any other gets the Switch
         // player as another Emerald, which it does not check (and draws as one).
-        if (this.bypassNationally && this.gameVersion === VERSION_EMERALD) {
+        if (!early && this.bypassNationally && this.gameVersion === VERSION_EMERALD) {
             if (this.rubyLP[LP_PROGRESS_OFFSET] & PROGRESS_LINK_HOENN) {
                 block[LP_PROGRESS_OFFSET] = PROGRESS_CLEARED;
                 block[LP_PROGRESS_OFFSET + 2] = PROGRESS_CLEARED;
@@ -517,7 +545,7 @@ export class CableTranslator {
             }
         }
         // In the Colosseum the id is the spot each player stands on; there are two.
-        if (this.battle) block[LP_ID_OFFSET] = this.rubyLP[LP_ID_OFFSET] ^ 1;
+        if (this.battle && !early) block[LP_ID_OFFSET] = this.rubyLP[LP_ID_OFFSET] ^ 1;
         this.cablePushBlock(block, block.length);
         this.p0LPDelivered = true;
         this.readyAt = this.cablePackets + SESSION_SETTLE_PACKETS;
@@ -613,7 +641,11 @@ export class CableTranslator {
             return;
         }
         if (!this.lpSentToHost && type <= 1) {
-            if (!this.haveRubyLP) { this.log('pull before the game\'s LinkPlayer is known'); return; }
+            if (!this.haveRubyLP) {
+                if (!this.lpPullWaiting) this.log('the other GBA\'s LinkPlayer goes to the leader when it arrives');
+                this.lpPullWaiting = true;
+                return;
+            }
             this.childQueuePush(this.buildLinkPlayerForHost(), LP_BUFFER_SIZE, true);
             this.lpSentToHost = true;
             return;
@@ -670,14 +702,20 @@ export class CableTranslator {
     // A block the game finished sending on the cable.
     gameBlock(size, data) {
         if (this.expect === EXPECT.LINK_PLAYER && size >= LINK_PLAYER_BLOCK_SIZE) {
+            const first = !this.haveRubyLP;
             this.rubyLP.set(data.subarray(0, LINK_PLAYER_BLOCK_SIZE));
             this.haveRubyLP = true;
+            const type = le16(data, LP_LINK_TYPE_OFFSET);
+            const chosen = type === LINKTYPE.SINGLE_BATTLE ? ACTIVITY.BATTLE_SINGLE
+                : type === LINKTYPE.DOUBLE_BATTLE ? ACTIVITY.BATTLE_DOUBLE : ACTIVITY.TRADE;
             if (!this.joined) {
                 this.hostNotReady = false;   // decided again from the room's next beacon
-                const type = le16(data, LP_LINK_TYPE_OFFSET);
-                this.activity = type === LINKTYPE.SINGLE_BATTLE ? ACTIVITY.BATTLE_SINGLE
-                    : type === LINKTYPE.DOUBLE_BATTLE ? ACTIVITY.BATTLE_DOUBLE : ACTIVITY.TRADE;
+                this.activity = chosen;
                 this.battleState = BATTLE.ROOM;
+            } else if (this.holdJoin && first) {
+                // Joined first: the room is the Switch's, the other player's choice should match.
+                this.battleState = BATTLE.ROOM;
+                if (chosen !== this.activity) this.log(`the other GBA chose link type ${hex(type)} for another room than the Switch's`);
             }
             if (this.battleState === BATTLE.STARTING && le16(data, LP_LINK_TYPE_OFFSET) === LINKTYPE.BATTLE) {
                 this.battleState = BATTLE.FIGHTING;
@@ -687,6 +725,11 @@ export class CableTranslator {
             this.expect = EXPECT.NONE;
             this.log(`game's LinkPlayer received (version ${hex(le16(data, LP_VERSION_OFFSET))}, link type ${hex(le16(data, LP_LINK_TYPE_OFFSET))})`);
             this.deliverLinkPlayerToGame();
+            if (this.lpPullWaiting && !this.lpSentToHost && this.joined) {
+                this.lpPullWaiting = false;
+                this.childQueuePush(this.buildLinkPlayerForHost(), LP_BUFFER_SIZE, true);
+                this.lpSentToHost = true;
+            }
             this.maybeStartRound0();
             return;
         }
@@ -865,6 +908,10 @@ export class CableTranslator {
         this.resetLink();
         this.setLink(-1);
         this.haveRubyLP = false;   // the next cable club visit starts a new search
+        this.groupSeen = false;
+        this.roomsSeen.clear();
+        this.severalRooms = false;
+        this.joinAllowed = !this.holdJoin;
         this.closeCount = 0;
         this.roomClosed = false;
         this.cancelPending = false;
@@ -998,10 +1045,16 @@ export class CableTranslator {
         const lp = this.rubyLP;
         const out = new Uint8Array(26);
         put16(out, 0, 2);
+        out[12] = this.activity | 0x80;
+        if (!this.haveRubyLP) {
+            // Shown as FireRed so the Switch takes it without its checks for other versions.
+            put16(out, 2, 2 | COMPAT_CAN_LINK_NATIONALLY | (1 << 8) | (1 << 9) | (VERSION_FIRE_RED << 10));
+            out.set(PLACEHOLDER_NAME, 17);
+            return out;
+        }
         const version = this.dressed ? VERSION_EMERALD : this.gameVersion;
         put16(out, 2, 2 | COMPAT_CAN_LINK_NATIONALLY | (1 << 8) | (1 << 9) | (version << 10));
         put16(out, 4, le16(lp, LP_TRAINER_ID_OFFSET));
-        out[12] = this.activity | 0x80;
         let i = 0;
         for (; i < 7 && lp[LP_NAME_OFFSET + i] !== 0xff; i++) out[17 + i] = lp[LP_NAME_OFFSET + i];
         out[17 + i] = 0xff;
@@ -1037,6 +1090,7 @@ export class CableTranslator {
         this.bar = newBarrier();
         this.lpSentToHost = false;
         this.lpSendDone = false;
+        this.lpPullWaiting = false;
         this.cardArmed = false;
         this.cardRequested = false;
         this.haveRubyCard = false;
@@ -1070,7 +1124,24 @@ export class CableTranslator {
             const occupied = (header >> 16) & 1;
             // RfuGameData: word 3's low byte is the activity (trade = 4).
             const word3 = ((frame[24] << 24) | (frame[25] << 16) | (frame[26] << 8) | frame[27]) >>> 0;
-            if (occupied || (word3 & 0x7f) !== this.activity) return;
+            const room = word3 & 0x7f;
+            if (occupied) return;
+            if (this.holdJoin && !this.haveRubyLP) {
+                if (room !== ACTIVITY.TRADE && room !== ACTIVITY.BATTLE_SINGLE && room !== ACTIVITY.BATTLE_DOUBLE) return;
+                // A board that cannot tell the Switch's room offers a group for each: the room
+                // is then the other player's choice, known once its LinkPlayer comes.
+                this.roomsSeen.add(room);
+                if (this.roomsSeen.size > 1) {
+                    if (!this.severalRooms) {
+                        this.severalRooms = true;
+                        this.groupSeen = false;
+                        this.log('the board shows the Switch\'s room as several groups: waiting for the other player\'s choice (update the board\'s firmware)');
+                        this.onLinked?.(this.linked);
+                    }
+                    return;
+                }
+                this.activity = room;
+            } else if (room !== this.activity) return;
             // Emerald joins a FireRed or LeafGreen trade group only once that game can link
             // nationally (its Sevii Islands story is done). A real Ruby and FireRed have the
             // same rule, checked by FireRed.
@@ -1085,6 +1156,14 @@ export class CableTranslator {
             }
             if (!ready) return;
             this.hostId = header & 0xffff;
+            if (!this.joinAllowed) {
+                if (!this.groupSeen) {
+                    this.groupSeen = true;
+                    this.log(`the Switch's ${['', 'single-battle', 'double-battle', '', 'trade'][this.activity]} group ${hex(this.hostId)} is open: ready for the other GBA`);
+                    this.onLinked?.(this.linked);
+                }
+                return;
+            }
             this.log(`the Switch's group ${hex(this.hostId)} found: joining`);
             this.setLink(AIR.CONNECTING);
             this.linkFrames = 0;
@@ -1311,7 +1390,7 @@ export class CableTranslator {
 
     // Once per GBA frame.
     frame() {
-        if (this.link < 0 && this.haveRubyLP) this.startSearch();
+        if (this.link < 0 && (this.haveRubyLP || this.holdJoin)) this.startSearch();
         if (this.link === AIR.CONNECTING && ++this.connectFrames > 8 * 60) {
             this.log('the Switch did not answer the join: looking again');
             this.startSearch();
@@ -1336,6 +1415,7 @@ export class CableTranslator {
 
     // The game opened its cable link from scratch.
     cableReset() {
+        this.joinAllowed = true;
         this.linkClosing = false;
         this.cablePackets = 0;
         this.readyAt = 0;
@@ -1395,8 +1475,11 @@ export class CableTranslator {
             // The master asks for the player data exchange.
             this.announced = true;
             this.expect = EXPECT.LINK_PLAYER;
+            this.lpEarlyWait = 0;
             return [LINKCMD.SEND_LINK_TYPE, 0x1133, 0, 0, 0, 0, 0, 0];
         }
+        if (this.holdJoin && this.expect === EXPECT.LINK_PLAYER && this.haveHostLP && !this.sessionRubyLP && !this.p0LPDelivered
+            && ++this.lpEarlyWait > LP_EARLY_PACKETS) this.deliverLinkPlayerToGame(true);
         if (this.cq.length) return this.cq.shift();
         if (this.keysActive) return [LINKCMD.SEND_HELD_KEYS, this.hostKey(), 0, 0, 0, 0, 0, 0];
         return null;
