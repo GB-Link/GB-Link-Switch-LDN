@@ -250,6 +250,8 @@ static struct
     int station_count;
     size_t adv_len;
     int64_t next_adv;
+    int64_t away_until;             /* on another channel until then; 0 at home */
+    int64_t home_check;             /* when to confirm the radio is back on the room's channel */
     bool (*orig_ap_join)(ldn_wpa_station_join_param_t *);
     bool (*orig_ap_remove)(uint8_t *);
     uint8_t *(*orig_ap_get_wpa_ie)(size_t *);
@@ -532,6 +534,27 @@ static void handle_auth(const uint8_t *src, const uint8_t *body, size_t n)
     }
 }
 
+/* A start that fails once the radio was touched leaves it as ldn_host_stop does: our AP
+   hooks removed and the station mode set, so a later start or room search finds the
+   radio as it expects. */
+static bool host_start_failed(const char *what)
+{
+    printf("LDN_HOST_ERROR %s\n", what);
+    if (wpa_cb && s_host.orig_ap_join)
+    {
+        wpa_cb->wpa_ap_join = s_host.orig_ap_join;
+        wpa_cb->wpa_ap_remove = s_host.orig_ap_remove;
+        wpa_cb->wpa_ap_get_wpa_ie = s_host.orig_ap_get_wpa_ie;
+        s_host.orig_ap_join = NULL;
+        s_host.orig_ap_remove = NULL;
+        s_host.orig_ap_get_wpa_ie = NULL;
+    }
+    esp_wifi_stop();
+    esp_wifi_set_mode(WIFI_MODE_STA);
+    memset(s_host.ccmp_key, 0, sizeof(s_host.ccmp_key));
+    return false;
+}
+
 bool ldn_host_start(const ldn_host_config_t *cfg, ldn_host_scratch_t *scratch)
 {
     if (s_host.running) ldn_host_stop();
@@ -587,16 +610,16 @@ bool ldn_host_start(const ldn_host_config_t *cfg, ldn_host_scratch_t *scratch)
     esp_wifi_stop();
     esp_fill_random(s_host.ap_mac, 6);
     s_host.ap_mac[0] = (s_host.ap_mac[0] & 0xfc) | 2;
-    if (esp_wifi_set_mode(WIFI_MODE_AP) != ESP_OK) { printf("LDN_HOST_ERROR SET_MODE\n"); return false; }
-    if (esp_wifi_set_mac(WIFI_IF_AP, s_host.ap_mac) != ESP_OK) { printf("LDN_HOST_ERROR SET_MAC\n"); return false; }
+    if (esp_wifi_set_mode(WIFI_MODE_AP) != ESP_OK) return host_start_failed("SET_MODE");
+    if (esp_wifi_set_mac(WIFI_IF_AP, s_host.ap_mac) != ESP_OK) return host_start_failed("SET_MAC");
 
     if (!s_host.ap_netif)
     {
         s_host.ap_netif = esp_netif_create_default_wifi_ap();
-        if (!s_host.ap_netif) { printf("LDN_HOST_ERROR NETIF\n"); return false; }
+        if (!s_host.ap_netif) return host_start_failed("NETIF");
     }
     if (!s_host.rx) s_host.rx = xQueueCreate(3, sizeof(host_frame_t));
-    if (!s_host.rx) { printf("LDN_HOST_ERROR NO_MEMORY\n"); return false; }
+    if (!s_host.rx) return host_start_failed("NO_MEMORY");
     xQueueReset(s_host.rx);
     portENTER_CRITICAL(&s_lock);
     s_join_n = s_leave_n = 0;
@@ -616,7 +639,7 @@ bool ldn_host_start(const ldn_host_config_t *cfg, ldn_host_scratch_t *scratch)
     config.ap.ssid_hidden = 1;                    /* as a Switch's beacons */
     config.ap.pmf_cfg.capable = false;
     config.ap.pmf_cfg.required = false;
-    if (esp_wifi_set_config(WIFI_IF_AP, &config) != ESP_OK) { printf("LDN_HOST_ERROR CONFIG\n"); return false; }
+    if (esp_wifi_set_config(WIFI_IF_AP, &config) != ESP_OK) return host_start_failed("CONFIG");
     /* 802.11b/g as a Switch: no HT elements. */
     esp_wifi_set_protocol(WIFI_IF_AP, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G);
     /* Hooked before esp_wifi_start, which reads the RSN element. */
@@ -629,7 +652,7 @@ bool ldn_host_start(const ldn_host_config_t *cfg, ldn_host_scratch_t *scratch)
         wpa_cb->wpa_ap_remove = host_ap_remove;
         wpa_cb->wpa_ap_get_wpa_ie = host_ap_get_wpa_ie;
     }
-    if (esp_wifi_start() != ESP_OK) { printf("LDN_HOST_ERROR START\n"); return false; }
+    if (esp_wifi_start() != ESP_OK) return host_start_failed("START");
     bridge_wifi_tx_power();
 #if CONFIG_BRIDGE_HOST_MAX_TX_POWER
     int8_t power = 0;
@@ -702,7 +725,29 @@ void ldn_host_poll(void)
         handle_auth(frame.bytes + 6, frame.bytes + 14, frame.len - 14);
 
     int64_t now_us = esp_timer_get_time();
-    if (now_us >= s_host.next_adv) { send_advertisement(); s_host.next_adv = now_us + 100000; }
+    if (s_host.away_until && now_us >= s_host.away_until)
+    {
+        s_host.away_until = 0;
+        esp_wifi_set_channel((uint8_t)s_host.channel, WIFI_SECOND_CHAN_NONE);
+        s_host.home_check = now_us + 20000;
+    }
+    else if (s_host.home_check && now_us >= s_host.home_check)
+    {
+        s_host.home_check = 0;
+        uint8_t primary = 0;
+        wifi_second_chan_t second;
+        if (esp_wifi_get_channel(&primary, &second) != ESP_OK || primary != s_host.channel)
+        {
+            printf("LDN_HOST_ERROR RETURN ch=%u room=%d\n", (unsigned)primary, s_host.channel);
+            esp_wifi_set_channel((uint8_t)s_host.channel, WIFI_SECOND_CHAN_NONE);
+        }
+    }
+    /* An advertisement sent from another channel would name this one. */
+    if (now_us >= s_host.next_adv && !s_host.away_until)
+    {
+        send_advertisement();
+        s_host.next_adv = now_us + 100000;
+    }
 
     int64_t now = now_ms();
     /* Repeated after a join in case a copy is lost. */
@@ -731,6 +776,17 @@ void ldn_host_set_app_data(const uint8_t *data, int length)
     s_host.app_data = data;
     s_host.app_data_len = length;
     if (s_host.running) reencode();
+}
+
+/* The access point itself moves: with no station joined the driver allows a channel change,
+   and the sniffer follows the radio. ldn_host_poll brings it back. */
+int ldn_host_listen_away(unsigned channel, unsigned ms)
+{
+    if (channel < 1 || channel > 11) return ESP_ERR_INVALID_ARG;
+    if (!s_host.running || s_host.station_count || s_host.away_until) return ESP_ERR_INVALID_STATE;
+    const esp_err_t error = esp_wifi_set_channel((uint8_t)channel, WIFI_SECOND_CHAN_NONE);
+    if (error == ESP_OK) s_host.away_until = esp_timer_get_time() + (int64_t)ms * 1000;
+    return error;
 }
 
 int ldn_host_member_count(void) { return s_host.station_count; }

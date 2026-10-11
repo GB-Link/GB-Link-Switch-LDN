@@ -11,6 +11,7 @@
 #include "transport.h"
 
 #include <stdio.h>
+#include "esp_heap_caps.h"
 #include "esp_random.h"
 #include "esp_system.h"
 #include "esp_timer.h"
@@ -46,14 +47,26 @@ enum { BR_IDLE, BR_SCAN, BR_AUTH, BR_MEMBER, BR_NET, BR_RUN, BR_HOST };
 /* Console activity counts as a live adapter link for this long. */
 #define CONSOLE_LIVE_MS 10000
 
-/* pokefirered constants/union_room.h: trade, single battle, double battle. */
-#define GROUP_COUNT 3
-static const uint8_t kGroupActivity[GROUP_COUNT] = {4, 1, 2};
+/* pokefirered constants/union_room.h: trade, single battle, double battle, multi battle,
+   Pokemon Jump, Berry Crush, Dodrio Berry Picking, and a Wonder Card or Wonder News sent to
+   a friend. The adapter keeps four broadcasts for the GBA, so a room whose record names
+   none of them is offered as the first three. */
+#define GROUP_COUNT 9
+#define GROUP_FALLBACK 3
+static const uint8_t kGroupActivity[GROUP_COUNT] = {4, 1, 2, 3, 9, 10, 11, 21, 22};
 
 static struct
 {
     int state;
     bool started;
+    bool restart_pending;               /* adapter on this chip: restart at the next poll */
+    uint16_t union_connect;             /* presence devid the GBA asked to connect to, 0 none */
+    bool union_join;                    /* the room joined is a Switch's Union Room presence */
+    uint16_t union_devid;               /* that presence's devid, beaconed alone while joined */
+    uint8_t union_host[6];              /* that Switch, whose next presence network is joined */
+    int union_channel;
+    int64_t union_deadline, join_started;
+    int64_t next_presence_beacon;
     ldn_network_t net;
     ldn_auth_t auth;
     /* Joiner and host state share memory; one runs at a time. */
@@ -105,6 +118,9 @@ static struct
     int64_t next_client_ack;
     uint8_t host_channel;
     int64_t closing_ms;                 /* when the GBA closed the link, 0 while it is open */
+    int64_t room_opened_ms, next_away;  /* the search for a Switch on other channels */
+    uint8_t away_index;
+    bool away_refused;                  /* the driver would not leave the channel: no search */
 } g;
 
 /* Back-off for a room whose handshake failed, doubling per failure. Each attempt joins as
@@ -119,6 +135,52 @@ static int64_t retry_hold_ms(void)
     const int step = s_retry.failures > 4 ? 3 : s_retry.failures - 1;
     return 15000LL << step;   /* 15, 30, 60, 120 s */
 }
+
+/* When the held room may be tried again, in uptime. After a reboot the hold runs from
+   the boot; a restart in place keeps the uptime, so the hold is set from the failure. */
+static int64_t s_retry_until;
+static bool s_retry_loaded;
+
+/* A room that could not be hosted is tried again after this long. */
+#define HOST_RETRY_MS 5000
+static int64_t s_host_retry_at;
+
+/* ---- Union Room: Switches present in the room ------------------------------------ */
+
+/* Each Switch idling in the Union Room is shown to the GBA as a peer with a fixed device
+   id, built from the presence network it last advertised; the GBA connects to that id.
+   The table outlives restarts so the GBA keeps seeing the same player. A presence
+   unheard for PRESENCE_TTL_MS is dropped (the Switch drops out of its own advertising
+   while it scans, and the GBA walks an unseen player out after 10 s). */
+#define PRESENCE_SLOTS 2
+#define PRESENCE_TTL_MS 8000
+#define PRESENCE_BEACON_MS 500
+typedef struct
+{
+    bool used;
+    uint16_t devid;
+    int64_t seen_ms;
+    uint8_t beacon[24];
+    ldn_network_t net;
+} presence_t;
+static presence_t s_presence[PRESENCE_SLOTS];
+/* The channel a Switch's Union Room was last heard on, for hosting the GBA's player when no
+   Switch is heard at the moment: its next visit is most likely there too. Kept over a
+   restart of the chip. */
+static RTC_NOINIT_ATTR struct { uint32_t magic; uint8_t channel; } s_union_room;
+#define UNION_ROOM_MAGIC 0x55524f4du
+static uint8_t union_room_channel(void) { return s_union_room.magic == UNION_ROOM_MAGIC ? s_union_room.channel : 0; }
+/* While hosting, the radio hears only the hosted channel. Until a Switch in the Union Room
+   is heard, the GBA's room keeps its network up and the radio steps away now and then to
+   listen on the other channels; a Switch found on one has the room moved beside it. A
+   Switch's network is up about three quarters of the time and advertises every 100 ms. */
+#define AWAY_FIRST_MS 2000              /* a Switch on the hosted channel is heard by then */
+#define AWAY_PERIOD_MS 1000
+#define AWAY_DWELL_MS 200
+static presence_t *presence_by_devid(uint16_t devid);
+static int presence_channel(void);
+static void send_presence(const presence_t *p);
+static void send_presences(int64_t now);
 
 static const unsigned kChannels[] = {1, 6, 11, 2, 3, 4, 5, 7, 8, 9, 10};
 #define CHANNEL_COUNT (sizeof(kChannels) / sizeof(kChannels[0]))
@@ -170,7 +232,7 @@ static void send_beacon(void)
 {
     for (int k = 0; k < GROUP_COUNT; ++k)
     {
-        if (g.room_activity && kGroupActivity[k] != g.room_activity) continue;
+        if (g.room_activity ? kGroupActivity[k] != g.room_activity : k >= GROUP_FALLBACK) continue;
         uint8_t f[36] = {0};
         memcpy(f, kRfu1, 4);
         bin_wb32(f + 4, RFU1_BROADCAST);
@@ -460,6 +522,9 @@ static void on_member_joined(const ldn_host_member_t *m)
         return;
     }
     printf("LDN_BRIDGE Switch %s joined the room as %s (%d)\n", m->name, m->ip, m->index);
+    /* A new session: in the Union Room one hosted room serves visit after visit, and an
+       earlier visit's half-done exchange must not reach this one. */
+    trade_shim_reset();
     g.member_index = m->index;
     update_app_data();
     pia_host_station_joined(g.host, m->mac, m->ip, m->index);
@@ -513,7 +578,7 @@ static void on_member_left(const ldn_host_member_t *m)
 {
     if (g.host->state == 0 || m->index != g.member_index) return;
     printf("LDN_BRIDGE Switch %s left the room\n", m->name);
-    print_session_summary();
+    if (g.session_ms) print_session_summary();
     g.member_index = -1;
     pia_host_station_left(g.host);
     if (g.client_connected)
@@ -533,17 +598,23 @@ static void enter_host_mode(void)
     cfg->scene_id = SCENE_ID;
     cfg->app_version = GAME_VERSION;
     cfg->maximum = 6;
+    /* Beside a Switch in the Union Room, the one heard now or where one was last heard: the
+       sniffer, held on the hosted channel, keeps hearing it. */
     static const uint8_t kHostChannels[3] = {1, 6, 11};
-    cfg->channel = kHostChannels[esp_random() % 3];
+    int channel = presence_channel();
+    if (!channel) channel = union_room_channel();
+    cfg->channel = channel ? channel : kHostChannels[esp_random() % 3];
     text_of_uname(g.gba_beacon + 16, cfg->host_name, sizeof(cfg->host_name));
     cfg->app_data_len = build_app_data(cfg->app_data, g.gba_beacon, g.gba_devid, 1, (g.gba_beacon[12] & 0x80) != 0);
     ldn_host_set_handlers(on_member_joined, on_member_left);
     if (!ldn_host_start(cfg, &g.s.hosting.radio))
     {
         printf("LDN_BRIDGE could not host a room\n");
+        s_host_retry_at = now_ms() + HOST_RETRY_MS;
         bridge_restart(false);
         return;
     }
+    ldn_session_watch_advertisements();
     uint8_t mac[6];
     ldn_host_mac(mac);
     pia_host_init(g.host, ldn_host_ssid(), mac, ldn_host_ip(), on_send, on_child_frame, on_log, NULL);
@@ -556,6 +627,10 @@ static void enter_host_mode(void)
     g.state = BR_HOST;
     g.next_tick_us = esp_timer_get_time();
     g.tick_fraction = 0;
+    g.host_channel = cfg->channel;
+    g.room_opened_ms = now_ms();
+    g.next_away = 0;
+    g.away_refused = false;
     printf("LDN_BRIDGE GBA %s is leading activity %u: hosting a room on channel %d\n",
            cfg->host_name, (unsigned)(g.gba_beacon[12] & 0x7f), cfg->channel);
 }
@@ -599,8 +674,15 @@ static void feed_rfu1(const uint8_t *frame, size_t length)
         g.gba_devid = (uint16_t)(header & 0xFFFF);
         memcpy(g.gba_beacon, beacon, sizeof(beacon));
         g.gba_beacon_ms = now_ms();
-        if (g.state == BR_SCAN && adapter_link_live()) enter_host_mode();
+        if (g.state == BR_SCAN && adapter_link_live() && now_ms() >= s_host_retry_at) enter_host_mode();
         else if (g.state == BR_HOST && changed) update_app_data();
+        return;
+    }
+    /* The GBA repeats its request while the join is under way; only the first one starts it. */
+    if (type == RFU1_CONNECT_REQ && (g.state == BR_SCAN || g.state == BR_HOST) && !g.union_connect && !g.union_join &&
+        presence_by_devid((uint16_t)(header & 0xFFFF)))
+    {
+        g.union_connect = (uint16_t)(header & 0xFFFF);
         return;
     }
     if (g.state == BR_HOST)
@@ -653,6 +735,7 @@ static void feed_rfu1(const uint8_t *frame, size_t length)
             }
         pia_link_set_connect(&g.s.link, true);
         if (!g.child_connected && g.s.link.accepted) connect_child();
+        else if (g.child_connected && g.union_join) send_command(RFU1_CONNECT_ACK, g.child_devid);
     }
     else if (type == RFU1_CLIENT_SEND)
     {
@@ -672,32 +755,34 @@ static void feed_rfu1(const uint8_t *frame, size_t length)
     }
 }
 
+/* RFU1 bytes from the adapter not yet cut into frames. */
+static size_t s_drain_used;
+
 static void drain_adapter(void)
 {
     static uint8_t gb[5 + PICO_LINK_MAX_PAYLOAD];
     static uint8_t stream[256];
-    static size_t used;
     size_t length = 0;
-    for (int i = 0; i < 32 && pico_link_poll_inbound(gb, sizeof(gb), &length); ++i)
+    for (int i = 0; i < 32 && !g.restart_pending && pico_link_poll_inbound(gb, sizeof(gb), &length); ++i)
     {
         if (length < 5 || gb[2] != PICO_LINK_CHANNEL_DATA) continue;
         size_t n = length - 5;
         /* RFU1 chunks are 64 bytes, zero padded; shorter ones are adapter telemetry. */
         if (n < 64) { trade_shim_adapter(now_ms(), gb + 5, n); continue; }
-        if (used + n > sizeof(stream)) used = 0;
-        memcpy(stream + used, gb + 5, n);
-        used += n;
+        if (s_drain_used + n > sizeof(stream)) s_drain_used = 0;
+        memcpy(stream + s_drain_used, gb + 5, n);
+        s_drain_used += n;
         /* Fixed size per type: resync on the magic. */
         size_t at = 0;
-        while (used - at >= 12)
+        while (s_drain_used - at >= 12)
         {
             if (memcmp(stream + at, kRfu1, 4) != 0) { ++at; continue; }
             int size = rfu1_size(bin_b32(stream + at + 4));
-            if (used - at < (size_t)size) break;
+            if (s_drain_used - at < (size_t)size) break;
             feed_rfu1(stream + at, (size_t)size);
             at += (size_t)size;
         }
-        if (at > 0) { memmove(stream, stream + at, used - at); used -= at; }
+        if (at > 0) { memmove(stream, stream + at, s_drain_used - at); s_drain_used -= at; }
     }
 }
 
@@ -707,6 +792,11 @@ void pia_bridge_start(void)
 {
     if (g.started) return;
     memset(&g, 0, sizeof(g));
+    if (!s_retry_loaded)
+    {
+        s_retry_until = retry_hold_ms();
+        s_retry_loaded = true;
+    }
     g.started = true;
     g.state = BR_SCAN;
     g.group = -1;
@@ -752,6 +842,11 @@ static void bridge_restart(bool session_ended)
 {
     /* A hosted session can end on the GBA's side, with the Switch still in the room. */
     if (g.state == BR_HOST && g.member_index >= 0 && g.session_ms) print_session_summary();
+    if (pico_link_adapter_on_chip())
+    {
+        g.restart_pending = true;
+        return;
+    }
     if (session_ended)
     {
         pico_link_set_mode();
@@ -760,6 +855,24 @@ static void bridge_restart(bool session_ended)
     }
     pia_bridge_stop();
     esp_restart();
+}
+
+/* The chip stays up for the adapter it carries: links still open end at the adapter, as
+   when a partner leaves, the radio goes back to the station role for the room search, and
+   the bridge starts over. The adapter keeps its state, so a GBA between links (in the
+   Union Room, or back at the counter) carries on. */
+static void restart_in_place(void)
+{
+    if (g.child_connected) send_command(RFU1_DISCONNECT, g.child_devid);
+    if (g.client_connected) send_command(RFU1_DISCONNECT, (uint32_t)g.client_devid | ((uint32_t)g.client_slot << 16));
+    pia_bridge_stop();
+    /* Hosting leaves the radio stopped; the search needs it running as a station. */
+    ldn_session_stop();
+    s_drain_used = 0;
+    pico_link_reset_inbound();
+    pia_bridge_start();
+    printf("LDN_BRIDGE restarted without a reboot, heap %u largest block %u\n", (unsigned)esp_get_free_heap_size(),
+           (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
 }
 
 bool pia_bridge_running(void) { return g.started; }
@@ -818,15 +931,164 @@ static void check_stall(int64_t now)
     trade_shim_pia_stall(now, &p);
 }
 
+static bool presence_devid_taken(uint16_t devid)
+{
+    for (int k = 0; k < GROUP_COUNT; ++k)
+        if (g.group_devid[k] == devid) return true;
+    for (int i = 0; i < PRESENCE_SLOTS; ++i)
+        if (s_presence[i].used && s_presence[i].devid == devid) return true;
+    return devid == g.gba_devid;
+}
+
+/* The peer the GBA sees: the record's player, activity and started bit as advertised. */
+static void beacon_checksum(uint8_t *beacon)
+{
+    int sum = 0;
+    for (int i = 0; i < 8; ++i) sum += beacon[16 + i] + beacon[2 + i];
+    beacon[15] = (uint8_t)~sum;
+}
+
+static void presence_beacon(uint8_t *beacon, const uint8_t *record)
+{
+    memset(beacon, 0, 24);
+    beacon_of_record(beacon, record);
+    bin_w16(beacon, 0x0002);                 /* RFU_SERIAL_GAME */
+    const uint16_t word = bin_u16(record + 16);
+    beacon[12] = (uint8_t)((word & 0x7f) | ((word >> 8) & 0x80));
+    beacon_checksum(beacon);
+}
+
+static void presence_note(const ldn_network_t *net, const uint8_t *record)
+{
+    presence_t *p = NULL;
+    for (int i = 0; i < PRESENCE_SLOTS && !p; ++i)
+        if (s_presence[i].used && memcmp(s_presence[i].net.host, net->host, 6) == 0) p = &s_presence[i];
+    if (!p)
+    {
+        for (int i = 0; i < PRESENCE_SLOTS; ++i)
+            if (!p || !s_presence[i].used || s_presence[i].seen_ms < p->seen_ms) p = &s_presence[i];
+        const char *name = "?";
+        for (int i = 0; i < net->member_count; ++i)
+            if (net->members[i].index == 0 && net->members[i].name[0]) name = net->members[i].name;
+        printf("LDN_BRIDGE Switch %s is in the Union Room on channel %d\n", name, net->channel);
+        memset(p, 0, sizeof(*p));
+        uint16_t devid;
+        do devid = (uint16_t)(esp_random() | 1);
+        while (presence_devid_taken(devid));
+        p->used = true;
+        p->devid = devid;
+    }
+    p->net = *net;
+    p->seen_ms = now_ms();
+    s_union_room.magic = UNION_ROOM_MAGIC;
+    s_union_room.channel = (uint8_t)net->channel;
+    presence_beacon(p->beacon, record);
+    /* Waiting to join this Switch: its newest network is joined as soon as it is heard. */
+    if (g.union_join && g.state == BR_SCAN && !g.have_room && memcmp(net->host, g.union_host, 6) == 0)
+    {
+        g.net = *net;
+        g.have_room = true;
+    }
+}
+
+static presence_t *presence_by_devid(uint16_t devid)
+{
+    for (int i = 0; i < PRESENCE_SLOTS; ++i)
+        if (s_presence[i].used && s_presence[i].devid == devid && now_ms() - s_presence[i].seen_ms < PRESENCE_TTL_MS)
+            return &s_presence[i];
+    return NULL;
+}
+
+/* The channel to host the GBA's presence on: the most recently heard Switch's, so the
+   sniffer, held on that channel while hosting, keeps hearing it. 0: none. */
+static int presence_channel(void)
+{
+    const presence_t *best = NULL;
+    for (int i = 0; i < PRESENCE_SLOTS; ++i)
+        if (s_presence[i].used && now_ms() - s_presence[i].seen_ms < PRESENCE_TTL_MS &&
+            (!best || s_presence[i].seen_ms > best->seen_ms))
+            best = &s_presence[i];
+    return best ? best->net.channel : 0;
+}
+
+static void send_presence(const presence_t *p)
+{
+    uint8_t f[36] = {0};
+    memcpy(f, kRfu1, 4);
+    bin_wb32(f + 4, RFU1_BROADCAST);
+    bin_wb32(f + 8, p->devid);               /* slot 0 free: joinable */
+    for (int i = 0; i < 6; ++i) bin_wb32(f + 12 + i * 4, bin_u32(p->beacon + i * 4));
+    to_pico(f, sizeof(f));
+}
+
+static void send_presences(int64_t now)
+{
+    if (now < g.next_presence_beacon) return;
+    g.next_presence_beacon = now + PRESENCE_BEACON_MS;
+    for (int i = 0; i < PRESENCE_SLOTS; ++i)
+        if (s_presence[i].used && now - s_presence[i].seen_ms < PRESENCE_TTL_MS) send_presence(&s_presence[i]);
+}
+
+/* The GBA's player is in the Union Room, nobody is joining its room and it is not about to
+   join a Switch's. */
+static bool room_idle(void)
+{
+    return (g.gba_beacon[12] & 0x40) && ldn_host_member_count() == 0 && !g.client_requested &&
+           !g.client_connected && !g.closing_ms && !g.union_connect;
+}
+
+/* Until a Switch in the Union Room is heard while this room is open: listen on the other
+   channels in turn. A Switch heard on another channel has the room moved there. */
+static void search_other_channels(int64_t now)
+{
+    const presence_t *heard = NULL;
+    for (int i = 0; i < PRESENCE_SLOTS; ++i)
+        if (s_presence[i].used && s_presence[i].seen_ms >= g.room_opened_ms &&
+            (!heard || s_presence[i].seen_ms > heard->seen_ms))
+            heard = &s_presence[i];
+    if (heard)
+    {
+        if (heard->net.channel == g.host_channel) return;
+        printf("LDN_BRIDGE a Switch is in the Union Room on channel %d: moving the GBA's room there\n",
+               heard->net.channel);
+        ldn_host_stop();
+        g.host = NULL;
+        enter_host_mode();
+        return;
+    }
+    if (g.away_refused || now - g.room_opened_ms < AWAY_FIRST_MS || now < g.next_away) return;
+    static const uint8_t kUnionChannels[3] = {1, 6, 11};
+    do g.away_index = (uint8_t)((g.away_index + 1) % 3);
+    while (kUnionChannels[g.away_index] == g.host_channel);
+    g.next_away = now + AWAY_PERIOD_MS;
+    const int error = ldn_host_listen_away(kUnionChannels[g.away_index], AWAY_DWELL_MS);
+    if (error)
+    {
+        g.away_refused = true;
+        printf("LDN_BRIDGE cannot listen on other channels while hosting: %s\n", esp_err_to_name(error));
+    }
+}
+
+/* A Switch in the Union Room advertises its presence with the same ids as a group, with
+   IN_UNION_ROOM (0x40) in the record's activity. */
+static bool union_room_record(const ldn_network_t *net, uint8_t record[APP_RECORD])
+{
+    return net->communication_id == FIRERED_ID && read_room_record(net->app_data, net->app_data_len, record) &&
+           (bin_u16(record + 16) & 0x40);
+}
+
 void pia_bridge_room(const ldn_network_t *net)
 {
     if (!g.started) return;
+    uint8_t record[APP_RECORD];
+    const bool union_room = union_room_record(net, record);
+    if (union_room) presence_note(net, record);
     if (g.state == BR_SCAN)
     {
-        if (net->communication_id != FIRERED_ID || !adapter_link_live()) return;
+        if (union_room || net->communication_id != FIRERED_ID || !adapter_link_live()) return;
         if (net->policy == 1 || net->member_count >= net->maximum) return;
         if (s_retry.magic == RETRY_MAGIC && memcmp(net->ssid, s_retry.ssid, 16) == 0 &&
-            now_ms() < retry_hold_ms()) return;
+            now_ms() < s_retry_until) return;
         g.net = *net;
         g.have_room = true;
         return;
@@ -854,9 +1116,76 @@ static void hex_of(const uint8_t *data, size_t length, char *out)
     out[2 * length] = 0;
 }
 
+/* The GBA's player talked to a Switch's presence: leave hosting and join that Switch's
+   network, as for a group the Switch leads. The GBA keeps retrying its connect for about
+   5 s, so the join gets a deadline to match. */
+#define UNION_JOIN_MS 8000
+/* A Switch in the Union Room drops its network to scan every few seconds and opens a new
+   one, so a network heard more than this long ago may be gone. */
+#define UNION_FRESH_MS 300
+/* An association not made in this long means the network closed: wait for the next. */
+#define UNION_ASSOCIATE_MS 1500
+
+static void await_union_network(void)
+{
+    ldn_session_stop();
+    g.have_room = false;
+    g.next_scan = 0;
+    g.state = BR_SCAN;
+}
+
+/* A radio just restarted as a station falls back to channel 1 after taking the channel it
+   was set to: checked and set again until what is listened for is heard. */
+#define LISTEN_REASSERT_MS 250
+
+static void listen_on(unsigned channel, int64_t now)
+{
+    if (now < g.next_scan) return;
+    g.next_scan = now + LISTEN_REASSERT_MS;
+    uint8_t primary = 0;
+    wifi_second_chan_t second;
+    if (esp_wifi_get_channel(&primary, &second) == ESP_OK && primary == channel) return;
+    ldn_session_scan(channel);
+}
+
+static void start_union_join(void)
+{
+    const presence_t *p = presence_by_devid(g.union_connect);
+    g.union_connect = 0;
+    if (!p) return;
+    if (g.state == BR_HOST)
+    {
+        ldn_host_stop();
+        g.host = NULL;
+        g.member_index = -1;
+        g.client_requested = g.client_connected = false;
+    }
+    g.union_join = true;
+    g.union_devid = p->devid;
+    /* The session counted from here, not from the hosting it replaces. */
+    g.frames_to_gba = g.frames_from_gba = g.to_gba_lost = 0;
+    g.session_ms = 0;
+    memcpy(g.union_host, p->net.host, 6);
+    g.union_channel = p->net.channel;
+    g.union_deadline = now_ms() + UNION_JOIN_MS;
+    printf("LDN_BRIDGE GBA is contacting the Switch's player: joining its Union Room network\n");
+    await_union_network();
+    if (now_ms() - p->seen_ms < UNION_FRESH_MS)
+    {
+        g.net = p->net;
+        g.have_room = true;
+    }
+}
+
 void pia_bridge_poll(void)
 {
     if (!g.started) return;
+    if (g.restart_pending)
+    {
+        restart_in_place();
+        return;
+    }
+    if (g.union_connect && (g.state == BR_SCAN || g.state == BR_HOST)) start_union_join();
     int64_t now = now_ms();
 
     switch (g.state)
@@ -864,6 +1193,18 @@ void pia_bridge_poll(void)
     case BR_SCAN:
         drain_adapter();
         note_link();
+        if (g.union_join && !g.have_room)
+        {
+            if (now > g.union_deadline)
+            {
+                printf("LDN_BRIDGE the Switch's player could not be reached\n");
+                bridge_restart(false);
+                return;
+            }
+            listen_on((unsigned)g.union_channel, now);
+            send_presences(now);
+            return;
+        }
         if (g.have_room)
         {
             char ssid[33], key_hex[33], bssid[18];
@@ -879,12 +1220,14 @@ void pia_bridge_poll(void)
             printf("LDN_BRIDGE joining channel=%d result=%d\n", g.net.channel, r);
             if (r != ESP_OK) { g.have_room = false; return; }
             g.state = BR_AUTH;
-            g.deadline = now + 40000;
+            g.deadline = g.union_join ? g.union_deadline : now + 40000;
+            g.join_started = now;
             g.next_auth = 0;
             g.auth_attempts = 0;
             g.authenticated = false;
             return;
         }
+        send_presences(now);
         if (now >= g.next_scan)
         {
             ldn_session_scan(kChannels[g.channel_index]);
@@ -894,7 +1237,13 @@ void pia_bridge_poll(void)
         return;
 
     case BR_AUTH:
+        drain_adapter();
         if (now > g.deadline) { printf("LDN_BRIDGE join timed out\n"); bridge_restart(false); return; }
+        if (g.union_join && !ldn_control_connected() && now - g.join_started > UNION_ASSOCIATE_MS)
+        {
+            await_union_network();
+            return;
+        }
         if (!ldn_control_connected()) return;
         ldn_control_mac(g.our_mac);
         if (g.authenticated) { g.state = BR_MEMBER; return; }
@@ -910,6 +1259,7 @@ void pia_bridge_poll(void)
         return;
 
     case BR_MEMBER:
+        drain_adapter();
         if (now > g.deadline) { printf("LDN_BRIDGE membership timed out\n"); bridge_restart(false); return; }
         return;
 
@@ -941,7 +1291,7 @@ void pia_bridge_poll(void)
         memcpy(host_mac, g.net.host, 6);
         pia_link_init(&g.s.link, g.net.ssid, g.our_mac, host_mac, g.our_ip, g.host_ip,
                       on_send, on_deliver, on_log, NULL);
-        pia_link_set_connect(&g.s.link, false);
+        pia_link_set_connect(&g.s.link, g.union_join);
         g.state = BR_RUN;
         g.deadline = now + 10000;
         g.next_tick_us = esp_timer_get_time();
@@ -958,7 +1308,13 @@ void pia_bridge_poll(void)
     case BR_RUN:
         ldn_udp_heartbeat();
         drain_adapter();
-        if (now >= g.next_beacon) { send_beacon(); g.next_beacon = now + 500; }
+        if (now >= g.next_beacon)
+        {
+            const presence_t *p = g.union_join ? presence_by_devid(g.union_devid) : NULL;
+            if (p) send_presence(p);
+            else if (!g.union_join) send_beacon();
+            g.next_beacon = now + 500;
+        }
         int64_t now_us = esp_timer_get_time();
         if (now_us >= g.next_tick_us)
         {
@@ -1031,6 +1387,7 @@ void pia_bridge_poll(void)
             if (g.session_up) print_session_summary();
             trade_shim_note(now, TRADE_SHIM_NOTE_HOST_DISCONNECT, 0, 0);
             bridge_restart(true);
+            return;
         }
         if (!g.session_up && pia_conn_connected(&g.s.link.conn))
         {
@@ -1046,6 +1403,7 @@ void pia_bridge_poll(void)
             printf("LDN_BRIDGE network lost\n");
             if (g.session_up) print_session_summary();
             bridge_restart(false);
+            return;
         }
         /* Handshake timeout: the Switch goes quiet instead of refusing. */
         if (!pia_conn_connected(&g.s.link.conn) && now > g.deadline)
@@ -1057,6 +1415,7 @@ void pia_bridge_poll(void)
                 s_retry.failures = 0;
             }
             if (s_retry.failures < 255) ++s_retry.failures;
+            s_retry_until = now + retry_hold_ms();
             printf("LDN_BRIDGE session handshake timed out, leaving this room alone for %d s\n",
                    (int)(retry_hold_ms() / 1000));
             bridge_restart(false);
@@ -1067,6 +1426,7 @@ void pia_bridge_poll(void)
     {
         drain_adapter();
         ldn_host_poll();
+        send_presences(now);
         int64_t now_us = esp_timer_get_time();
         if (now_us >= g.next_tick_us)
         {
@@ -1103,7 +1463,11 @@ void pia_bridge_poll(void)
         }
         if (g.closing_ms)
         {
-            if (now - g.closing_ms > CLOSE_GRACE_MS + TEARDOWN_MS) bridge_restart(false);
+            if (now - g.closing_ms > CLOSE_GRACE_MS + TEARDOWN_MS)
+            {
+                bridge_restart(false);
+                return;
+            }
             else if (now - g.closing_ms > CLOSE_GRACE_MS && !g.host->child_disconnected) pia_host_disconnect_child(g.host);
         }
         else if (!g.client_connected && now - g.gba_beacon_ms > BEACON_TIMEOUT_MS)
@@ -1111,6 +1475,7 @@ void pia_bridge_poll(void)
             printf("LDN_BRIDGE GBA closed its group\n");
             bridge_restart(false);
         }
+        else if (room_idle()) search_other_channels(now);
         return;
     }
 

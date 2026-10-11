@@ -1,0 +1,13 @@
+menu "Bridge link"
+
+config GB_LINK_TX_GPIO
+    int "TX, to the bridge board's RX"
+    default 17 if IDF_TARGET_ESP32
+    default 2
+
+config GB_LINK_RX_GPIO
+    int "RX, from the bridge board's TX"
+    default 16 if IDF_TARGET_ESP32
+    default 1
+
+endmenu

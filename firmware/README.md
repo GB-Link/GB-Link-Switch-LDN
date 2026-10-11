@@ -24,7 +24,9 @@ probably swapped: `LDN_PICO_SWAP` swaps them in software until the next restart.
 
 Tested boards: Seeed Studio XIAO ESP32-S3 (attach its antenna), ESP32-S3-N16R8,
 M5Stack AtomS3, Seeed Studio XIAO ESP32-C6, a DOIT ESP32 DEVKIT V1 and an ESP32-C3
-board. On the XIAO ESP32-C6, `LDN_ANTENNA 0|1` picks the onboard or external antenna.
+board. When it starts, the XIAO ESP32-C6 tries its onboard and external antennas on the
+Wi-Fi traffic around it and keeps the one that hears it better, so an antenna plugged into
+its U.FL socket is used without a setting. `LDN_ANTENNA 0|1` picks one by hand.
 
 ## Building
 

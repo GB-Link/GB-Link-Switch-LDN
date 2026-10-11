@@ -10,9 +10,12 @@
    - The child refuses a block request during a barrier or a block send. The parent
      asks once.
    - The parent checks a consecutive mod-8 tag on every child command.
+   - READY_CLOSE_LINK sets the sender's close flag; the link closes once every player's
+     is set.
    Scripts follow trade.c / trade_scene.c: retail runs five post-trade rounds, the
-   Switch six. Fault knobs drop frames like the Switch emulator and adapter path.
-   run_lead swaps the roles. */
+   Switch six. A Union Room trading-board trade closes the link after the save instead:
+   three rounds on retail, four on the Switch. Fault knobs drop frames like the Switch
+   emulator and adapter path. run_lead swaps the roles. */
 
 #include "trade_shim.h"
 
@@ -22,6 +25,7 @@
 
 #define FRAME_MS 17
 #define CMD_STANDBY 0x6600
+#define CMD_CLOSE 0x5f00
 #define CMD_BLOCK_INIT 0x8800
 #define CMD_BLOCK 0x8900
 #define CMD_BLOCK_REQ 0xa100
@@ -30,7 +34,7 @@
 
 typedef struct { uint16_t w[7]; } slot_t;
 
-enum { S_ROUND, S_WAIT, S_EXCHANGE, S_TRADE_FINISH, S_MENU, S_END };
+enum { S_ROUND, S_WAIT, S_EXCHANGE, S_TRADE_FINISH, S_MENU, S_CLOSE, S_END };
 typedef struct { int kind; int ms; } step_t;
 
 typedef struct
@@ -42,6 +46,8 @@ typedef struct
     int64_t until;
     int count;               /* resendExitStandbyCount */
     bool flag[2];            /* readyExitStandby */
+    bool close[2];           /* readyCloseLink */
+    int64_t close_started;
     bool in_round;           /* gRfu.callback busy with a barrier */
     int round_timer;
     slot_t sendq[64];
@@ -71,6 +77,7 @@ typedef struct
     int child_busy_ms;       /* child busy time after each party block (resend loop) */
     int duplicate_every;     /* adapter duplicates every Nth child command frame, 0 never */
     int drop_queued_command; /* bridge queue drops the Nth command frame, 0 never */
+    bool board;              /* Union Room trading-board trade */
 } scenario_t;
 
 static uint16_t g_serial;
@@ -108,6 +115,7 @@ static void handle(actor_t *a, int i, const slot_t *s, int64_t now)
     if (cmd == 0) return;
     if (i != (a->parent ? 0 : -1)) a->last_peer_command = now;   /* any command but its own */
     if (cmd == CMD_STANDBY) { if (v == a->count) a->flag[i] = true; return; }
+    if (cmd == CMD_CLOSE) { a->close[i] = true; return; }
     if (i == (a->parent ? 0 : 1)) return;                         /* own command or echo: only peer blocks count */
     if (cmd == CMD_BLOCK_REQ && !a->parent)
     {
@@ -167,6 +175,10 @@ static void run_script(actor_t *a, int64_t now)
         break;
     case S_MENU:
         ++a->menu_opens; next = true;
+        break;
+    case S_CLOSE:                                      /* SetCloseLinkCallback */
+        if (a->sub == 0) { push(a, CMD_CLOSE, a->count, 0); a->close_started = now; a->sub = 1; }
+        else if (a->close[0] && a->close[1]) next = true;
         break;
     case S_END:
         break;
@@ -257,17 +269,50 @@ static const step_t parent_script_five[] = {
     {S_END, 0},
 };
 
+/* Union Room trading board (union_room.c Task_StartUnionRoomTrade): link-up, the offered
+   Pokemon and mail, the trade scene, then CB2_SaveAndEndTrade closes the link. */
+#define BOARD_START {S_ROUND, 0}, {S_EXCHANGE, 0}, {S_ROUND, 0}, {S_WAIT, 1000}, {S_EXCHANGE, 0}, {S_ROUND, 0}, \
+                    {S_WAIT, 1000}, {S_TRADE_FINISH, 0}
+static const step_t board_child_retail[] = {
+    BOARD_START, {S_ROUND, 0}, {S_WAIT, -1}, {S_ROUND, 0}, {S_WAIT, 1160}, {S_ROUND, 0}, {S_WAIT, 1340},
+    {S_CLOSE, 0}, {S_END, 0},
+};
+static const step_t board_parent_switch[] = {
+    BOARD_START, {S_ROUND, 0}, {S_WAIT, 1300}, {S_ROUND, 0}, {S_ROUND, 0}, {S_WAIT, 1000}, {S_ROUND, 0}, {S_WAIT, 800},
+    {S_CLOSE, 0}, {S_END, 0},
+};
+static const step_t board_child_switch[] = {
+    BOARD_START, {S_ROUND, 0}, {S_WAIT, -1}, {S_ROUND, 0}, {S_ROUND, 0}, {S_WAIT, 1160}, {S_ROUND, 0}, {S_WAIT, 1340},
+    {S_CLOSE, 0}, {S_END, 0},
+};
+static const step_t board_parent_retail[] = {
+    BOARD_START, {S_ROUND, 0}, {S_WAIT, 1300}, {S_ROUND, 0}, {S_WAIT, 1000}, {S_ROUND, 0}, {S_WAIT, 800},
+    {S_CLOSE, 0}, {S_END, 0},
+};
+
+/* The child's script with the save time filled in. */
+static void load_child(actor_t *c, step_t *steps, size_t capacity, const step_t *script, size_t count, int save_ms)
+{
+    if (count > capacity) { fprintf(stderr, "script too long\n"); exit(2); }
+    memcpy(steps, script, count * sizeof(*script));
+    for (size_t i = 0; i < count; ++i)
+        if (steps[i].kind == S_WAIT && steps[i].ms < 0) steps[i].ms = save_ms;
+    c->script = steps;
+}
+#define SCRIPT(x) (x), sizeof(x) / sizeof((x)[0])
+
+/* A trading-board link closes promptly once the cartridge starts closing it. */
+#define BOARD_CLOSE_MS 4000
+
 static int run(const char *label, scenario_t sc, int verbose)
 {
     actor_t c = {.name = "child", .expect_tag = -1};
     actor_t p = {.name = "parent", .parent = true, .expect_tag = -1};
-    step_t child_steps[sizeof(child_script) / sizeof(child_script[0])];
-    memcpy(child_steps, child_script, sizeof(child_script));
-    for (size_t i = 0; i < sizeof(child_steps) / sizeof(child_steps[0]); ++i)
-        if (child_steps[i].kind == S_WAIT && child_steps[i].ms < 0) child_steps[i].ms = sc.save_ms;
-    c.script = child_steps;
+    step_t child_steps[64];
+    if (sc.board) load_child(&c, child_steps, 64, SCRIPT(board_child_retail), sc.save_ms);
+    else load_child(&c, child_steps, 64, SCRIPT(child_script), sc.save_ms);
     c.block_busy_ms = sc.child_busy_ms;
-    p.script = sc.parent_five_rounds ? parent_script_five : parent_script_six;
+    p.script = sc.board ? board_parent_switch : sc.parent_five_rounds ? parent_script_five : parent_script_six;
     memset(&bq, 0, sizeof(bq)); memset(&hq, 0, sizeof(hq));
     g_serial = 0;
     int child_frames = 0, queued_commands = 0;
@@ -392,6 +437,8 @@ static int run(const char *label, scenario_t sc, int verbose)
         {
             printf("  %s: both scripts finished at %.1fs, child count %d, parent count %d, menus %d/%d, tag errors %d, refused requests %d, duplicates acted on %d\n",
                    label, now / 1000.0, c.count, p.count, c.menu_opens, p.menu_opens, p.tag_errors_total, c.refused_requests, p.duplicate_accepts);
+            if (sc.board && now - c.close_started > BOARD_CLOSE_MS)
+            { printf("  %s: FAIL link closed %.1fs after the cartridge began closing it\n", label, (now - c.close_started) / 1000.0); return 1; }
             return p.duplicate_accepts ? 1 : 0;
         }
         bool moving = c.recv[0].w[0] || c.recv[1].w[0] || pf[3] != 0;
@@ -410,17 +457,15 @@ static int run(const char *label, scenario_t sc, int verbose)
 
 /* Lead role: Switch is the child (six post-trade rounds), cartridge the parent (five).
    Child tags go through unchanged to the parent's check. */
-static int run_lead(const char *label, bool shim, int save_ms, int child_busy_ms, int verbose)
+static int run_lead(const char *label, bool shim, bool board, int save_ms, int child_busy_ms, int verbose)
 {
     actor_t c = {.name = "switch", .expect_tag = -1};
     actor_t p = {.name = "gba", .parent = true, .expect_tag = -1};
-    step_t child_steps[sizeof(child_script_six) / sizeof(child_script_six[0])];
-    memcpy(child_steps, child_script_six, sizeof(child_script_six));
-    for (size_t i = 0; i < sizeof(child_steps) / sizeof(child_steps[0]); ++i)
-        if (child_steps[i].kind == S_WAIT && child_steps[i].ms < 0) child_steps[i].ms = save_ms;
-    c.script = child_steps;
+    step_t child_steps[64];
+    if (board) load_child(&c, child_steps, 64, SCRIPT(board_child_switch), save_ms);
+    else load_child(&c, child_steps, 64, SCRIPT(child_script_six), save_ms);
     c.block_busy_ms = child_busy_ms;
-    p.script = parent_script_five;
+    p.script = board ? board_parent_retail : parent_script_five;
     memset(&bq, 0, sizeof(bq)); memset(&hq, 0, sizeof(hq));
     g_serial = 0;
     trade_shim_reset();
@@ -506,6 +551,8 @@ static int run_lead(const char *label, bool shim, int save_ms, int child_busy_ms
         {
             printf("  %s: both scripts finished at %.1fs, switch count %d, gba count %d, menus %d/%d, tag rejects %d, refused requests %d, duplicates acted on %d\n",
                    label, now / 1000.0, c.count, p.count, c.menu_opens, p.menu_opens, p.tag_errors_total, c.refused_requests, p.duplicate_accepts);
+            if (board && now - p.close_started > BOARD_CLOSE_MS)
+            { printf("  %s: FAIL link closed %.1fs after the cartridge began closing it\n", label, (now - p.close_started) / 1000.0); return 1; }
             return p.duplicate_accepts ? 1 : 0;
         }
         bool moving = c.recv[0].w[0] || c.recv[1].w[0] || pf[3] != 0;
@@ -621,15 +668,26 @@ int main(int argc, char **argv)
     failures += run("shim, queue drop", (scenario_t){.shim = true, .save_ms = 6500, .drop_queued_command = 120}, verbose);
     failures += run("shim, queue drop 2", (scenario_t){.shim = true, .save_ms = 6500, .drop_queued_command = 250}, verbose);
     printf("lead role without shim, Switch child save 6.5 s (expect the stall the hardware shows):\n");
-    if (run_lead("lead, no shim", false, 6500, 0, 0) == 0) { printf("  unexpected: no stall without the shim\n"); ++failures; }
+    if (run_lead("lead, no shim", false, false, 6500, 0, 0) == 0) { printf("  unexpected: no stall without the shim\n"); ++failures; }
     printf("lead role with shim, Switch child save 6.5 s:\n");
-    failures += run_lead("lead, shim, slow save", true, 6500, 0, verbose);
+    failures += run_lead("lead, shim, slow save", true, false, 6500, 0, verbose);
     printf("lead role with shim, Switch child save 0.8 s:\n");
-    failures += run_lead("lead, shim, fast save", true, 800, 0, verbose);
+    failures += run_lead("lead, shim, fast save", true, false, 800, 0, verbose);
     printf("lead role with shim, Switch child save 12 s:\n");
-    failures += run_lead("lead, shim, very slow save", true, 12000, 0, 0);
+    failures += run_lead("lead, shim, very slow save", true, false, 12000, 0, 0);
     printf("lead role with shim, the child's link layer busy when each party request arrives:\n");
-    failures += run_lead("lead, shim, busy child", true, 6500, 150, verbose);
+    failures += run_lead("lead, shim, busy child", true, false, 6500, 150, verbose);
+    printf("trading board, Switch leading, without shim (expect the Switch held in its last round):\n");
+    if (run("board, no shim", (scenario_t){.board = true, .save_ms = 6500}, 0) == 0) { printf("  unexpected: no stall without the shim\n"); ++failures; }
+    printf("trading board, Switch leading, with shim:\n");
+    failures += run("board, shim", (scenario_t){.shim = true, .board = true, .save_ms = 6500}, verbose);
+    failures += run("board, shim, fast save", (scenario_t){.shim = true, .board = true, .save_ms = 800}, verbose);
+    failures += run("board, shim, duplicates + busy", (scenario_t){.shim = true, .board = true, .save_ms = 6500, .duplicate_every = 3, .child_busy_ms = 150}, verbose);
+    printf("trading board, GBA leading, without shim (the hang seen on hardware):\n");
+    if (run_lead("board lead, no shim", false, true, 800, 0, 0) == 0) { printf("  unexpected: no stall without the shim\n"); ++failures; }
+    printf("trading board, GBA leading, with shim:\n");
+    failures += run_lead("board lead, shim", true, true, 800, 0, verbose);
+    failures += run_lead("board lead, shim, slow save", true, true, 6500, 0, verbose);
     printf("unit checks:\n");
     failures += unit_request_repeat();
     printf(failures ? "FAILED\n" : "PASS\n");

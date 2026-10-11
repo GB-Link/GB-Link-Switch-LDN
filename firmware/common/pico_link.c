@@ -383,6 +383,8 @@ void pico_link_reset_inbound(void)
     while (xQueueReceive(s_inbound, &discard, 0) == pdTRUE) { }
 }
 
+bool pico_link_adapter_on_chip(void) { return false; }
+
 bool pico_link_swapped(void) { return s_swapped; }
 /* Reboot the Pico into its USB bootloader. Its command channel is this UART, so
    without this a reflash needs BOOTSEL held. */

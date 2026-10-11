@@ -12,6 +12,7 @@
 #define RTC_NOINIT_ATTR
 #endif
 
+#define RFUCMD_READY_CLOSE_LINK 0x5f00
 #define RFUCMD_READY_EXIT_STANDBY 0x6600
 #define RFUCMD_SEND_BLOCK_INIT 0x8800
 #define RFUCMD_SEND_BLOCK 0x8900
@@ -144,6 +145,7 @@ static struct
     bool have_tag;            /* child has sent a command */
     bool post_trade;          /* from trade confirmation to the next block request */
     bool injected;            /* extra round supplied for this trade */
+    bool closing;             /* GBA closing the link after this trade: no more rounds from it */
     int last_round;           /* newest parent standby answer, parent numbering, -1 none */
     int last_child_round;     /* newest forwarded child standby, parent numbering */
     int answers_since_confirm;
@@ -534,6 +536,11 @@ size_t trade_shim_child(uint8_t *payload, size_t length, int64_t now_ms, uint8_t
             s.request_served = (s.request_frags & all) == all;
         }
     }
+    if (command == RFUCMD_READY_CLOSE_LINK && s.post_trade && !s.closing)
+    {
+        s.closing = true;
+        log_event(now_ms, EV_NOTE, TRADE_SHIM_NOTE_GBA_CLOSING, (uint16_t)s.answers_since_confirm, 0);
+    }
     if (command != RFUCMD_READY_EXIT_STANDBY) return 0;
 
     int c = rd16(slot + 2), p = to_ahead(c);
@@ -640,6 +647,7 @@ size_t trade_shim_host(uint8_t *payload, size_t length, int64_t now_ms, uint8_t 
             {
                 s.post_trade = true;
                 s.injected = false;
+                s.closing = false;
                 s.answers_since_confirm = 0;
                 s.fake_round = -1;
                 s.fake_acked = false;
@@ -702,7 +710,7 @@ size_t trade_shim_inject(int64_t now_ms, uint8_t *out, size_t capacity)
     int64_t quiet = now_ms - s.quiet_since;
     if (!s.injected)
     {
-        bool due = (s.answers_since_confirm >= TRADE_SHIM_CHILD_ROUNDS && quiet >= TRADE_SHIM_SETTLE_MS)
+        bool due = s.closing || (s.answers_since_confirm >= TRADE_SHIM_CHILD_ROUNDS && quiet >= TRADE_SHIM_SETTLE_MS)
                 || (s.answers_since_confirm >= 1 && quiet >= TRADE_SHIM_FALLBACK_MS);
         if (!due) return 0;
         int next = s.last_round > s.last_child_round ? s.last_round : s.last_child_round;
@@ -796,11 +804,12 @@ size_t trade_shim_lead_child(uint8_t *payload, size_t length, int64_t now_ms, ui
     size_t n = 0;
     if (p > s.last_round)
     {
-        /* Past the GBA's newest barrier. After the cartridge's post-trade rounds this is
-           the Switch's extra round, which the GBA never answers. Answered here and
-           forwarded as 0xffff, since the GBA's barrier of that number is still ahead. */
+        /* Past the GBA's newest barrier. After the cartridge's post-trade rounds (all five,
+           or fewer and the GBA closing the link) this is the Switch's extra round, which
+           the GBA never answers. Answered here and forwarded as 0xffff, since the GBA's
+           barrier of that number is still ahead. */
         wr16(slot + 2, (uint16_t)p);
-        if (!s.post_trade || s.injected || s.answers_since_confirm < TRADE_SHIM_CHILD_ROUNDS) return 0;
+        if (!s.post_trade || s.injected || (s.answers_since_confirm < TRADE_SHIM_CHILD_ROUNDS && !s.closing)) return 0;
         add_fake(c);
         s.fake_round = c;
         s.injected = true;
@@ -875,6 +884,7 @@ void trade_shim_lead_parent(uint8_t *payload, size_t length, int64_t now_ms)
             {
                 s.post_trade = true;
                 s.injected = false;
+                s.closing = false;
                 s.answers_since_confirm = 0;
                 s.fake_round = -1;
                 s.hold = false;
@@ -891,6 +901,12 @@ void trade_shim_lead_parent(uint8_t *payload, size_t length, int64_t now_ms)
                 s.request_attempts = 0;
                 s.request_frags = 0;
                 log_event(now_ms, EV_REQUEST, s.post_trade ? 1 : 0, value, 0);
+            }
+            else if (command == RFUCMD_READY_CLOSE_LINK && s.post_trade && !s.closing)
+            {
+                /* Answered at the Switch's next retry of its round, within a second. */
+                s.closing = true;
+                log_event(now_ms, EV_NOTE, TRADE_SHIM_NOTE_GBA_CLOSING, (uint16_t)s.answers_since_confirm, 1);
             }
         }
         if (command != RFUCMD_READY_EXIT_STANDBY) continue;
@@ -1091,7 +1107,7 @@ static const char *const kEventNames[] = {
     "?", "BOOT", "RESET", "CONFIRM", "PARENT_STANDBY", "CHILD_STANDBY", "REQUEST", "INJECT",
     "ACK", "REANSWER", "REREQUEST", "NOTE", "HOST_BLOCK", "GIVE_UP", "ADAPTER", "BRIDGE", "TRACE",
     "SENT", "ECHO", "PIA" };
-static const char *const kNoteNames[] = { "?", "bridge start", "child connect", "child disconnect", "host disconnect", "bridge stop", "host silence ms", "parent disconnect cmd", "child tag gap prev/now", "switch clock skip frames/ms", "echo synthesized idx/count", "parent fragment gap expect/got", "echo gap mask/count", "restamped resend idx/tag", "adapter trace seq count<<8|restarts", "unzip failure error/wire bytes", "echo stall unechoed/ms", "pia stall pending/ms", "stall recovered pia=1/echo=2", "switch net request type/seq", "switch net request NOT acknowledged type/copies" };
+static const char *const kNoteNames[] = { "?", "bridge start", "child connect", "child disconnect", "host disconnect", "bridge stop", "host silence ms", "parent disconnect cmd", "child tag gap prev/now", "switch clock skip frames/ms", "echo synthesized idx/count", "parent fragment gap expect/got", "echo gap mask/count", "restamped resend idx/tag", "adapter trace seq count<<8|restarts", "unzip failure error/wire bytes", "echo stall unechoed/ms", "pia stall pending/ms", "stall recovered pia=1/echo=2", "switch net request type/seq", "switch net request NOT acknowledged type/copies", "gba closing the link after rounds/lead" };
 static const char *const kTraceKinds[] = { "?", "cmd", "event", "restart_in_state", "delivery", "sd_reset_in_state", "login" };
 
 static void format_entry(const log_entry_t *e, char *line, size_t cap)

@@ -29,6 +29,11 @@
    the GBA's party request and block until the Switch is ready, repeats refused
    requests.
 
+   A Union Room trading-board trade closes the link after the save instead of going
+   back to the trade menu: three post-trade rounds on a cartridge, four on the Switch.
+   A GBA closing the link answers no more rounds, so from its READY_CLOSE_LINK the
+   Switch's remaining round is supplied (joiner role) or answered (lead role) at once.
+
    Events go to a log that survives a chip reset (opening the console resets it). */
 
 void trade_shim_boot(int reset_reason);
@@ -102,7 +107,7 @@ enum { TRADE_SHIM_NOTE_BRIDGE_START = 1, TRADE_SHIM_NOTE_CHILD_CONNECT, TRADE_SH
        TRADE_SHIM_NOTE_ECHO_SYNTHESIZED, TRADE_SHIM_NOTE_PARENT_FRAGMENT_GAP, TRADE_SHIM_NOTE_ECHO_GAP,
        TRADE_SHIM_NOTE_RESTAMPED_RESEND, TRADE_SHIM_NOTE_ADAPTER_TRACE, TRADE_SHIM_NOTE_UNZIP_FAILURE,
        TRADE_SHIM_NOTE_ECHO_STALL, TRADE_SHIM_NOTE_PIA_STALL, TRADE_SHIM_NOTE_STALL_RECOVERED,
-       TRADE_SHIM_NOTE_NET_REQUEST, TRADE_SHIM_NOTE_NET_UNACKNOWLEDGED };
+       TRADE_SHIM_NOTE_NET_REQUEST, TRADE_SHIM_NOTE_NET_UNACKNOWLEDGED, TRADE_SHIM_NOTE_GBA_CLOSING };
 void trade_shim_note(int64_t now_ms, uint8_t kind, uint16_t b, uint16_t c);
 
 /* Adapter telemetry frame from the Pico (data-channel payload under 64 bytes).
