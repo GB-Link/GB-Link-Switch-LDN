@@ -297,6 +297,14 @@ function predict(game, language) {
     }
   }
 
+  // Where a symbol is in the European GBA ROM: its table's address, or for a
+  // routine the table doesn't have, where the alignment found it.
+  const gbaAddress = (name, kind) => {
+    const at = refCard[name] & ~1;
+    if (tables[name]) return tables[name];
+    if (kind === 'fn' && placed.has(at)) return refCard[name] + placed.get(at);
+    throw new Error(`${id}: no ${name} in the GBA table, nor where the alignment could place it`);
+  };
   const symbols = {};
   const kinds = {};
   for (const [name, spec] of Object.entries(SYMBOLS)) {
@@ -311,8 +319,7 @@ function predict(game, language) {
       const index = swObjects.findIndex((o) => value >= o.addr && value < o.addr + o.size);
       symbols[name] = value + distanceFrom(swObjects, index + 1, refObjects, refFns, placed) - (value > swUnion ? unionGrowth : 0);
     } else {
-      if (!tables[name]) throw new Error(`${id}: no ${name} in the GBA table`);
-      symbols[name] = value + (tables[name] - refCard[name]) - pastUnion(refCard[name]);
+      symbols[name] = value + (gbaAddress(name, kind) - refCard[name]) - pastUnion(refCard[name]);
     }
   }
 
@@ -354,7 +361,7 @@ function predict(game, language) {
     }
     const swAt = swCard[name] & ~1;
     const refAt = refCard[name] & ~1 || null;
-    const glAt = (tables[name] ?? 0) & ~1 || null;
+    const glAt = refAt && gbaAddress(name, kinds[name] === 'routine' ? 'fn' : null) & ~1;
     const predicted = symbols[name] & ~1;
     let check = null;
     if (kinds[name] === 'routine') {
