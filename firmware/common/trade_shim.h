@@ -39,6 +39,10 @@
 void trade_shim_boot(int reset_reason);
 void trade_shim_reset(void);
 
+/* Where the parent's frames carry this child's echo: slot 1 for the first client, k + 1 for
+   client slot k in a group. Set when the child connects. */
+void trade_shim_set_echo_slot(uint8_t slot);
+
 /* Child -> parent UNI frame (2-byte LLSF header + 14-byte command slot), rewritten in
    place. If the child is retrying a barrier the parent already answered, writes one or
    two parent UNI frames (73 bytes each) to `reply` and returns their total length. */
@@ -93,6 +97,22 @@ void trade_shim_lead_parent(uint8_t *payload, size_t length, int64_t now_ms);
 size_t trade_shim_lead_inject(int64_t now_ms, uint8_t *out, size_t capacity);
 /* Parent frame the next one supersedes (lead role). */
 bool trade_shim_parent_sheddable(const uint8_t *payload, size_t length);
+
+/* Group lead role (a multi battle or minigame the GBA leads): each Switch is one of its
+   children, numbered by the host's station slot. Per child: a standby round it retries
+   after the GBA has left it is answered for the GBA, and a block request it has not
+   started answering is repeated. Frames built for a child go to that child alone.
+   trade_shim_reset clears it. */
+void trade_shim_group_connected(int child, uint8_t slot, bool connected);
+/* Parent frame from the GBA, toward every child. */
+void trade_shim_group_parent(const uint8_t *payload, size_t length, int64_t now_ms);
+/* Child frame toward the GBA. The answer to a retried round the GBA has left goes to
+   `reply` (one 73-byte parent frame); returns its length, else 0. */
+size_t trade_shim_group_child(int child, const uint8_t *payload, size_t length, int64_t now_ms, uint8_t *reply,
+                              size_t reply_capacity);
+/* Once per tick for each child: a repeat of the GBA's block request when due (73 bytes),
+   else 0. */
+size_t trade_shim_group_inject(int child, int64_t now_ms, uint8_t *out, size_t capacity);
 /* Adapter's own report: client queue high-water mark, frames dropped from it,
    superseded reports shed, bytes lost on the UART. */
 void trade_shim_adapter_counts(uint8_t *queue_high, uint16_t *queue_drops, uint8_t *sheds, uint16_t *uart_overflows);

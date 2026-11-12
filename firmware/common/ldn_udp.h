@@ -23,3 +23,5 @@ bool ldn_udp_send(const char *ip, const uint8_t *data, size_t length);
    on-device bridge in place of LDN_PING. */
 void ldn_udp_heartbeat(void);
 void ldn_udp_set_handler(void (*handler)(const char *ip, const uint8_t *data, size_t length));
+/* Temporary: datagrams refused for their size, port or source. */
+unsigned ldn_udp_rx_rejected(void);

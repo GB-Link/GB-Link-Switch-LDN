@@ -634,6 +634,82 @@ static int unit_request_repeat(void)
     return failures;
 }
 
+/* A parent frame of a group of `children`: LLSF header naming them, one command in slot 0. */
+static void group_parent_frame(uint8_t *f, int children, uint16_t cmd, uint16_t v)
+{
+    memset(f, 0, 73);
+    f[0] = 0x46; f[1] = 0x00; f[2] = (uint8_t)((((1u << children) - 1) << 2) | 1);
+    wr16(f + 3, cmd); wr16(f + 5, v);
+}
+
+static bool round_answer_ok(const uint8_t *f, int players, uint16_t round, uint8_t header2)
+{
+    if (f[0] != 0x46 || f[1] != 0x00 || f[2] != header2) return false;
+    for (int i = 0; i < 5; ++i)
+    {
+        const uint16_t cmd = (uint16_t)(f[3 + 14 * i] | f[4 + 14 * i] << 8), v = (uint16_t)(f[5 + 14 * i] | f[6 + 14 * i] << 8);
+        if (i < players ? (cmd != CMD_STANDBY || v != round) : (cmd || v)) return false;
+    }
+    return true;
+}
+
+/* Group repairs, GBA leading three Switch children: the answer to a round one child retries
+   after the GBA left it names every player; a block request a quiet child has not started
+   answering is repeated to it, up to three times, never to one that is answering or busy.
+   Joining a group: the GBA's own retried round is answered for every player too. */
+static int unit_group(void)
+{
+    int failures = 0;
+    uint8_t hf[73], cf[16], reply[146], out[73];
+    bool fwd;
+
+    trade_shim_reset();
+    for (int k = 0; k < 3; ++k) trade_shim_group_connected(k, (uint8_t)k, true);
+    group_parent_frame(hf, 3, CMD_STANDBY, 4);
+    trade_shim_group_parent(hf, sizeof(hf), 1000);
+    child_command_frame(cf, 2, CMD_STANDBY, 4);
+    size_t n = trade_shim_group_child(1, cf, 16, 1100, reply, sizeof(reply));
+    if (n != 73 || !round_answer_ok(reply, 4, 4, hf[2])) { printf("  unit: FAIL group round answer (%zu bytes)\n", n); ++failures; }
+    child_command_frame(cf, 3, CMD_STANDBY, 5);
+    if (trade_shim_group_child(1, cf, 16, 1150, reply, sizeof(reply)) != 0)
+    { printf("  unit: FAIL group round answered before the GBA left it\n"); ++failures; }
+
+    group_parent_frame(hf, 3, CMD_BLOCK_REQ, 2);
+    trade_shim_group_parent(hf, sizeof(hf), 2000);
+    child_command_frame(cf, 4, CMD_BLOCK_INIT, 9);
+    trade_shim_group_child(0, cf, 16, 2100, reply, sizeof(reply));
+    child_command_frame(cf, 5, CMD_STANDBY, 5);
+    trade_shim_group_child(1, cf, 16, 3300, reply, sizeof(reply));
+    if (trade_shim_group_inject(0, 3600, out, sizeof(out)) != 0) { printf("  unit: FAIL group request repeated to an answering child\n"); ++failures; }
+    if (trade_shim_group_inject(1, 3600, out, sizeof(out)) != 0) { printf("  unit: FAIL group request repeated to a busy child\n"); ++failures; }
+    n = trade_shim_group_inject(2, 3600, out, sizeof(out));
+    const bool request_ok = n == 73 && out[2] == hf[2] && out[3] == 0x00 && out[4] == 0xa1 && out[5] == 2 && out[6] == 0;
+    if (!request_ok) { printf("  unit: FAIL group request not repeated to a quiet child (%zu bytes)\n", n); ++failures; }
+    if (trade_shim_group_inject(2, 3700, out, sizeof(out)) != 0) { printf("  unit: FAIL group request repeated back to back\n"); ++failures; }
+    if (trade_shim_group_inject(1, 4100, out, sizeof(out)) != 73) { printf("  unit: FAIL group request not repeated once the child is quiet\n"); ++failures; }
+    int repeats = 1;
+    for (int64_t t = 5200; t < 12000; t += 100) repeats += trade_shim_group_inject(2, t, out, sizeof(out)) == 73;
+    if (repeats != 3) { printf("  unit: FAIL group request repeated %d times, not 3\n", repeats); ++failures; }
+    trade_shim_group_connected(1, 1, false);
+    group_parent_frame(hf, 2, CMD_BLOCK_REQ, 1);
+    trade_shim_group_parent(hf, sizeof(hf), 13000);
+    if (trade_shim_group_inject(1, 16000, out, sizeof(out)) != 0) { printf("  unit: FAIL group request repeated to a child that left\n"); ++failures; }
+
+    /* Joiner role in a group: the GBA is client 2, its echo in slot 3. */
+    trade_shim_reset();
+    trade_shim_set_echo_slot(3);
+    uint8_t pre[8 * 73];
+    group_parent_frame(hf, 3, CMD_STANDBY, 6);
+    trade_shim_host(hf, sizeof(hf), 1000, pre, sizeof(pre));
+    child_command_frame(cf, 1, CMD_STANDBY, 6);
+    n = trade_shim_child(cf, 16, 2200, reply, sizeof(reply), &fwd);
+    if (n < 73 || !round_answer_ok(reply, 4, 6, hf[2])) { printf("  unit: FAIL joiner's group round answer (%zu bytes)\n", n); ++failures; }
+    trade_shim_set_echo_slot(1);
+
+    printf("  group checks: %s\n", failures ? "FAILED" : "ok");
+    return failures;
+}
+
 int main(int argc, char **argv)
 {
     (void)argv;
@@ -690,6 +766,7 @@ int main(int argc, char **argv)
     failures += run_lead("board lead, shim, slow save", true, true, 6500, 0, verbose);
     printf("unit checks:\n");
     failures += unit_request_repeat();
+    failures += unit_group();
     printf(failures ? "FAILED\n" : "PASS\n");
     return failures ? 1 : 0;
 }

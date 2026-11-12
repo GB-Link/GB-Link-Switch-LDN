@@ -970,6 +970,15 @@ extern "C" void wa_adapter_recalibrate(void)
     wa_port_wake();
 }
 
+extern "C" uint32_t wa_adapter_search_age_ms(void)
+{
+    wa_port_lock();
+    const bool searched = g_core.searched;
+    const uint32_t at = g_core.lastSearchMs;
+    wa_port_unlock();
+    return searched ? wa_port_ms() - at : UINT32_MAX;
+}
+
 extern "C" void wa_adapter_stats(wa_stats_t* out)
 {
     std::memset(out, 0, sizeof(*out));

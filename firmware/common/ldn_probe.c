@@ -30,6 +30,7 @@
 #include "transport.h"
 #include "ldn_udp.h"
 #include "ldn_wire.h"
+#include "gba_vcc.h"
 #define printf ldn_wire_printf
 static esp_netif_t *s_station_netif;
 
@@ -667,6 +668,7 @@ static void run_private_join(void)
         }
         if (now - last_advertisement >= 250000) { export_advertisement(); last_advertisement = now; }
         antenna_poll(now);
+        gba_vcc_poll(now);
         /* The GBA<->Switch protocol ticks every ~16.7 ms; keep this delay minimal. */
         vTaskDelay(pdMS_TO_TICKS(1));
     }
@@ -689,6 +691,7 @@ void app_main(void)
     bridge_board_init();
     /* Before anything else allocates: see pia_crypto_prepare. */
     pia_crypto_prepare();
+    gba_vcc_start();
     esp_chip_info_t chip;
     esp_chip_info(&chip);
     uint32_t flash_bytes = 0;

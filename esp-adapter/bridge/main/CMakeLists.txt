@@ -27,6 +27,9 @@ idf_component_register(
 )
 
 if(target STREQUAL "esp32")
+    # With the adapter on its pins the original ESP32 has static RAM for three Switches in
+    # a room the GBA leads: a group of four.
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE PIA_HOST_STATIONS=3)
     bridge_pin_wifi_driver(esp32 "018dd68296790dadf4b4e9632f174d6c3a685ef786ec9d7429d3c4c6439f0cf1")
 elseif(target STREQUAL "esp32s3")
     bridge_pin_wifi_driver(esp32s3 "265e5c89ac0d2a9444b5b466afee49f631ec549f96774f91a721ab5069c58e20")

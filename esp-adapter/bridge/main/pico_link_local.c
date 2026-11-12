@@ -395,6 +395,13 @@ bool pico_link_await_mode(void) { return s_awaitMode; }
 bool pico_link_wrong_cable(void) { return s_wrongCable; }
 bool pico_link_gba_active(void) { return s_gbaActive; }
 
+int64_t pico_link_gba_search_age_ms(void)
+{
+    if (s_port == PICO_PORT_HOST) return -1;
+    const uint32_t age = wa_adapter_search_age_ms();
+    return age == UINT32_MAX ? INT64_MAX : (int64_t)age;
+}
+
 /* Drop frames buffered before a consumer attached. */
 void pico_link_reset_inbound(void)
 {

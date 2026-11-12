@@ -373,6 +373,7 @@ uint32_t pico_link_mode_sent(void) { return s_modeSent; }
 bool pico_link_await_mode(void) { return s_awaitMode; }
 bool pico_link_wrong_cable(void) { return s_wrongCable; }
 bool pico_link_gba_active(void) { return s_gbaActive; }
+int64_t pico_link_gba_search_age_ms(void) { return -1; }
 
 /* Drop frames buffered before a consumer attached, e.g. a stale WrongCable from a
    mode entry since retried. */

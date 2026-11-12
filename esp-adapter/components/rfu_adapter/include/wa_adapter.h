@@ -44,6 +44,10 @@ void wa_adapter_feed(const uint8_t *bytes, size_t length);
 /* Runs the self-test again on the adapter task, then resumes the link. */
 void wa_adapter_recalibrate(void);
 
+/* How long ago the GBA last looked for a group to join (started or polled a search),
+   in ms; UINT32_MAX before its first search. */
+uint32_t wa_adapter_search_age_ms(void);
+
 typedef struct {
     /* self-test */
     wa_cal_t cal;

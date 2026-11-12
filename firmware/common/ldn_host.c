@@ -233,6 +233,11 @@ static uint8_t s_host_rsn_ie[] = {
 
 typedef struct { ldn_host_member_t pub; int64_t assoc_ms; } host_station_t;
 typedef struct { uint16_t len; uint8_t bytes[HOST_FRAME_MAX]; } host_frame_t;
+/* A frame from one station to another, passed on as an AP does: the members of a room
+   probe each other. Theirs are small. The queue exists only while hosting. */
+#define HOST_RELAY_MAX 256
+#define HOST_RELAY_DEPTH 6
+typedef struct { uint16_t len; uint8_t bytes[HOST_RELAY_MAX]; } relay_frame_t;
 
 static struct
 {
@@ -257,7 +262,9 @@ static struct
     uint8_t *(*orig_ap_get_wpa_ie)(size_t *);
     void (*joined)(const ldn_host_member_t *);
     void (*left)(const ldn_host_member_t *);
-    QueueHandle_t rx;
+    QueueHandle_t rx, relay;
+    uint32_t relayed;
+    uint32_t relay_big, relay_full, relay_largest;   /* temporary */
     int64_t joined_ms, next_probe_ms;
 } s_host;
 
@@ -459,6 +466,22 @@ static void probe_arp(const host_station_t *st)
 static esp_err_t host_ap_rx(void *buffer, uint16_t length, void *eb)
 {
     const uint8_t *bytes = buffer;
+    if (length >= 14 && !(bytes[0] & 1) && memcmp(bytes, s_host.ap_mac, 6) != 0)
+    {
+        /* For another station: the poll loop checks it is one and sends it on. */
+        QueueHandle_t relay = s_host.relay;
+        if (length > s_host.relay_largest) s_host.relay_largest = length;
+        if (length > HOST_RELAY_MAX) ++s_host.relay_big;
+        else if (relay)
+        {
+            relay_frame_t frame;
+            frame.len = length;
+            memcpy(frame.bytes, bytes, length);
+            if (xQueueSend(relay, &frame, 0) != pdTRUE) ++s_host.relay_full;
+        }
+        esp_wifi_internal_free_rx_buffer(eb);
+        return ESP_OK;
+    }
     if (length >= 14 && bytes[12] == 0x88 && bytes[13] == 0xb7 && memcmp(bytes, s_host.ap_mac, 6) == 0)
     {
         if (length <= HOST_FRAME_MAX)
@@ -534,6 +557,14 @@ static void handle_auth(const uint8_t *src, const uint8_t *body, size_t n)
     }
 }
 
+static void relay_free(void)
+{
+    if (!s_host.relay) return;
+    QueueHandle_t q = s_host.relay;
+    s_host.relay = NULL;
+    vQueueDelete(q);
+}
+
 /* A start that fails once the radio was touched leaves it as ldn_host_stop does: our AP
    hooks removed and the station mode set, so a later start or room search finds the
    radio as it expects. */
@@ -550,6 +581,7 @@ static bool host_start_failed(const char *what)
         s_host.orig_ap_get_wpa_ie = NULL;
     }
     esp_wifi_stop();
+    relay_free();
     esp_wifi_set_mode(WIFI_MODE_STA);
     memset(s_host.ccmp_key, 0, sizeof(s_host.ccmp_key));
     return false;
@@ -619,8 +651,11 @@ bool ldn_host_start(const ldn_host_config_t *cfg, ldn_host_scratch_t *scratch)
         if (!s_host.ap_netif) return host_start_failed("NETIF");
     }
     if (!s_host.rx) s_host.rx = xQueueCreate(3, sizeof(host_frame_t));
-    if (!s_host.rx) return host_start_failed("NO_MEMORY");
+    if (!s_host.relay) s_host.relay = xQueueCreate(HOST_RELAY_DEPTH, sizeof(relay_frame_t));
+    if (!s_host.rx || !s_host.relay) return host_start_failed("NO_MEMORY");
     xQueueReset(s_host.rx);
+    s_host.relayed = 0;
+    s_host.relay_big = s_host.relay_full = s_host.relay_largest = 0;
     portENTER_CRITICAL(&s_lock);
     s_join_n = s_leave_n = 0;
     portEXIT_CRITICAL(&s_lock);
@@ -698,6 +733,7 @@ void ldn_host_stop(void)
     }
     ldn_udp_stop();
     esp_wifi_stop();
+    relay_free();
     esp_wifi_set_mode(WIFI_MODE_STA);   /* back to station mode for the joiner */
     s_host.running = false;
     s_host.station_count = 0;
@@ -723,6 +759,14 @@ void ldn_host_poll(void)
     host_frame_t frame;
     while (xQueueReceive(s_host.rx, &frame, 0) == pdTRUE)
         handle_auth(frame.bytes + 6, frame.bytes + 14, frame.len - 14);
+    relay_frame_t relay;
+    while (xQueueReceive(s_host.relay, &relay, 0) == pdTRUE)
+    {
+        const int slot = find_station(relay.bytes);
+        if (slot >= 0 && s_host.stations[slot].pub.authenticated &&
+            esp_wifi_internal_tx(WIFI_IF_AP, relay.bytes, relay.len) == 0)
+            ++s_host.relayed;
+    }
 
     int64_t now_us = esp_timer_get_time();
     if (s_host.away_until && now_us >= s_host.away_until)
@@ -790,6 +834,13 @@ int ldn_host_listen_away(unsigned channel, unsigned ms)
 }
 
 int ldn_host_member_count(void) { return s_host.station_count; }
+uint32_t ldn_host_relayed(void) { return s_host.relayed; }
+void ldn_host_relay_counts(uint32_t *big, uint32_t *full, uint32_t *largest)
+{
+    *big = s_host.relay_big;
+    *full = s_host.relay_full;
+    *largest = s_host.relay_largest;
+}
 
 const ldn_host_member_t *ldn_host_member(int i)
 {

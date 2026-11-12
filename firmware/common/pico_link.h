@@ -56,6 +56,10 @@ uint32_t pico_link_mode_sent(void);
 bool pico_link_await_mode(void);
 bool pico_link_wrong_cable(void);
 bool pico_link_gba_active(void);
+/* How long ago the GBA last looked for a group to join, in ms (INT64_MAX before it has);
+   -1 when its adapter does not report searches (a GB-Link on the UART, or the client's
+   adapter on the host port). */
+int64_t pico_link_gba_search_age_ms(void);
 
 /* Drop frames buffered before the host was listening. */
 void pico_link_reset_inbound(void);

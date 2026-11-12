@@ -196,12 +196,15 @@ static struct
 static uint16_t rd16(const uint8_t *p) { return (uint16_t)(p[0] | (p[1] << 8)); }
 static void wr16(uint8_t *p, uint16_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
 
+static void group_reset(void);
+
 void trade_shim_reset(void)
 {
     memset(&s, 0, sizeof(s));
     s.last_round = -1;
     s.fake_round = -1;
     s.request_type = -1;
+    group_reset();
     log_event(0, EV_RESET, 0, 0, 0);
 }
 
@@ -446,6 +449,47 @@ static size_t build_host_frame(uint8_t *out, uint16_t cmd0, uint16_t v0, uint16_
     return 73;
 }
 
+/* Child role: this child's echo slot in the parent's frames, and the parent's latest LLSF
+   header. In a group the header's slot bits name every child, so frames made for a later
+   client copy it. */
+static uint8_t s_echo_slot = 1;
+static uint8_t s_parent_header[3] = {0x46, 0x00, 0x05};
+
+void trade_shim_set_echo_slot(uint8_t slot) { s_echo_slot = slot >= 1 && slot <= 4 ? slot : 1; }
+
+/* A parent frame toward the child: cmd0 in the parent's slot, cmd1 in the child's echo slot. */
+static size_t build_parent_frame(uint8_t *out, uint16_t cmd0, uint16_t v0, uint16_t cmd1, uint16_t v1)
+{
+    if (s_echo_slot == 1) return build_host_frame(out, cmd0, v0, cmd1, v1);
+    memset(out, 0, 73);
+    memcpy(out, s_parent_header, 3);
+    wr16(out + 3, cmd0); wr16(out + 5, v0);
+    wr16(out + 3 + 14 * s_echo_slot, cmd1); wr16(out + 5 + 14 * s_echo_slot, v1);
+    return 73;
+}
+
+/* Players in a parent frame: the parent and the children its LLSF header's slot bits name. */
+static int header_players(const uint8_t header[3])
+{
+    const unsigned slots = (header[2] >> 2) & 15;
+    return 1 + (int)((slots & 1) + ((slots >> 1) & 1) + ((slots >> 2) & 1) + ((slots >> 3) & 1));
+}
+
+/* The answer to a standby round the parent has left, as the parent's frames carried it:
+   every player's ready in its slot. A child leaves the round only when it has seen all of
+   them. */
+static size_t build_round_answer(uint8_t *out, const uint8_t header[3], uint16_t round)
+{
+    memset(out, 0, 73);
+    memcpy(out, header, 3);
+    for (int p = 0; p < header_players(header) && p < 5; ++p)
+    {
+        wr16(out + 3 + 14 * p, RFUCMD_READY_EXIT_STANDBY);
+        wr16(out + 5 + 14 * p, round);
+    }
+    return 73;
+}
+
 static size_t build_child_frame(uint8_t *out, uint8_t tag, uint16_t round)
 {
     memset(out, 0, 16);
@@ -552,7 +596,9 @@ size_t trade_shim_child(uint8_t *payload, size_t length, int64_t now_ms, uint8_t
        re-sent. Answer for the parent. A late real copy is ignored by the child, whose
        counter has moved on. */
     if (p > s.last_round || reply_capacity < 146) return 0;
-    size_t n = build_host_frame(reply, RFUCMD_READY_EXIT_STANDBY, (uint16_t)c, RFUCMD_READY_EXIT_STANDBY, (uint16_t)c);
+    size_t n = s_echo_slot == 1 && header_players(s_parent_header) <= 2
+                   ? build_host_frame(reply, RFUCMD_READY_EXIT_STANDBY, (uint16_t)c, RFUCMD_READY_EXIT_STANDBY, (uint16_t)c)
+                   : build_round_answer(reply, s_parent_header, (uint16_t)c);
     ++s.reanswers;
     log_event(now_ms, EV_REANSWER, 0, (uint16_t)c, (uint16_t)p);
     printf("LDN_BRIDGE GBA is retrying standby round %d that the Switch already answered (as %d), answering for it\n", c, p);
@@ -560,7 +606,7 @@ size_t trade_shim_child(uint8_t *payload, size_t length, int64_t now_ms, uint8_t
        layer. The parent does not repeat it. */
     if (s.request_type >= 0 && !s.request_served && s.request_attempts < TRADE_SHIM_MAX_REREQUESTS)
     {
-        n += build_host_frame(reply + n, RFUCMD_SEND_BLOCK_REQ, (uint16_t)s.request_type, 0, 0);
+        n += build_parent_frame(reply + n, RFUCMD_SEND_BLOCK_REQ, (uint16_t)s.request_type, 0, 0);
         ++s.request_attempts;
         ++s.rerequests;
         s.request_at = now_ms;
@@ -579,13 +625,16 @@ size_t trade_shim_host(uint8_t *payload, size_t length, int64_t now_ms, uint8_t 
     if (((header >> 14) & 15) != 4) return 0;           /* not a UNI frame */
     size_t size = header & 0x7f;
     if (size < 28 || 3 + size > length) return 0;
-    for (int i = 0; i < 2; ++i)                       /* slot 0: parent, slot 1: echo of this child */
+    memcpy(s_parent_header, payload, 3);
+    for (int n = 0; n < 2; ++n)                       /* the parent's slot 0, then this child's echo */
     {
+        const int i = n == 0 ? 0 : s_echo_slot;
+        if ((size_t)(14 * (i + 1)) > size) break;
         uint8_t *slot = payload + 3 + 14 * i;
         uint16_t command = rd16(slot), value = rd16(slot + 2);
         if (command == 0) continue;
         s.quiet_since = now_ms;
-        if (i == 1)
+        if (i == s_echo_slot)
         {
             ++s.echoes;
             s.echo_ring[s.echo_head].ms = (uint32_t)now_ms;
@@ -597,7 +646,7 @@ size_t trade_shim_host(uint8_t *payload, size_t length, int64_t now_ms, uint8_t 
             if (s.echo_stall_reported) incident_resolved(now_ms, 2);
             s.echo_stall_reported = false;
         }
-        if (i == 1 && (command & 0xff00) == RFUCMD_SEND_BLOCK && s.cb.active)
+        if (i == s_echo_slot && (command & 0xff00) == RFUCMD_SEND_BLOCK && s.cb.active)
         {
             uint8_t index = (uint8_t)(command & 0x1f);
             if (index < s.cb.count) s.cb.echoed |= 1u << index;
@@ -614,8 +663,9 @@ size_t trade_shim_host(uint8_t *payload, size_t length, int64_t now_ms, uint8_t 
                     uint8_t *f = pre + pre_len;
                     memset(f, 0, 73);
                     memcpy(f, payload, 3);                     /* LLSF header of the real frame */
-                    f[17] = k; f[18] = RFUCMD_SEND_BLOCK >> 8; /* slot 1: echo, tag stripped */
-                    memcpy(f + 19, s.cb.data[k], 12);
+                    uint8_t *echo = f + 3 + 14 * s_echo_slot;  /* the echo, tag stripped */
+                    echo[0] = k; echo[1] = RFUCMD_SEND_BLOCK >> 8;
+                    memcpy(echo + 2, s.cb.data[k], 12);
                     pre_len += 73;
                     s.cb.echoed |= 1u << k;
                     ++s.echoes_synthesized;
@@ -756,7 +806,7 @@ size_t trade_shim_host_inject(int64_t now_ms, uint8_t *out, size_t capacity)
     log_event(now_ms, EV_REREQUEST, (uint8_t)s.request_attempts, (uint16_t)s.request_type, 0);
     printf("LDN_BRIDGE GBA did not answer the Switch's block request %d, repeating it (attempt %d)\n",
            s.request_type, s.request_attempts);
-    return build_host_frame(out, RFUCMD_SEND_BLOCK_REQ, (uint16_t)s.request_type, 0, 0);
+    return build_parent_frame(out, RFUCMD_SEND_BLOCK_REQ, (uint16_t)s.request_type, 0, 0);
 }
 
 /* ---- lead role: GBA is parent, Switch is child ------------------------------------ */
@@ -989,6 +1039,106 @@ size_t trade_shim_lead_inject(int64_t now_ms, uint8_t *out, size_t capacity)
     printf("LDN_BRIDGE Switch has not answered the GBA's party request %d, repeating it (attempt %d)\n",
            s.request_type, s.request_attempts);
     return lead_release_frame(out);
+}
+
+/* ---- group lead: the GBA leads a group, each Switch one of its children ------------ */
+
+#define GROUP_CHILDREN 4
+
+typedef struct
+{
+    bool connected, answering;        /* answering: has started its block for the request */
+    uint8_t slot;
+    int attempts;
+    int64_t last_command_ms, repeated_at;
+} group_child_t;
+
+static struct
+{
+    uint8_t header[3];                /* the GBA's latest LLSF header */
+    int last_round;                   /* the newest standby round the GBA has left, -1 none */
+    int request_type;                 /* its newest block request, -1 none */
+    int64_t request_at;
+    group_child_t child[GROUP_CHILDREN];
+} gl;
+
+static void group_reset(void)
+{
+    memset(&gl, 0, sizeof(gl));
+    gl.header[0] = 0x46; gl.header[2] = 0x05;
+    gl.last_round = gl.request_type = -1;
+}
+
+void trade_shim_group_connected(int child, uint8_t slot, bool connected)
+{
+    if (child < 0 || child >= GROUP_CHILDREN) return;
+    group_child_t *c = &gl.child[child];
+    memset(c, 0, sizeof(*c));
+    c->connected = connected;
+    c->slot = slot;
+    c->answering = true;              /* owes nothing for a request from before it joined */
+}
+
+void trade_shim_group_parent(const uint8_t *payload, size_t length, int64_t now_ms)
+{
+    if (length < 3) return;
+    const uint32_t header = payload[0] | (payload[1] << 8) | ((uint32_t)payload[2] << 16);
+    if (((header >> 14) & 15) != 4) return;             /* not a UNI frame */
+    const size_t size = header & 0x7f;
+    if (size < 14 || 3 + size > length) return;
+    memcpy(gl.header, payload, 3);
+    const uint16_t command = rd16(payload + 3), value = rd16(payload + 5);
+    if (command == RFUCMD_READY_EXIT_STANDBY && (int)value > gl.last_round) gl.last_round = value;
+    else if (command == RFUCMD_SEND_BLOCK_REQ)
+    {
+        gl.request_type = value;
+        gl.request_at = now_ms;
+        for (int i = 0; i < GROUP_CHILDREN; ++i) { gl.child[i].answering = false; gl.child[i].attempts = 0; }
+        log_event(now_ms, EV_REQUEST, 0, value, 0);
+    }
+}
+
+size_t trade_shim_group_child(int child, const uint8_t *payload, size_t length, int64_t now_ms, uint8_t *reply,
+                              size_t reply_capacity)
+{
+    if (child < 0 || child >= GROUP_CHILDREN || length < 16) return 0;
+    if (((rd16(payload) >> 10) & 15) != 4) return 0;  /* not a UNI frame */
+    const uint8_t *slot = payload + 2;
+    if (slot[1] == 0) return 0;                        /* idle: no command */
+    group_child_t *c = &gl.child[child];
+    c->last_command_ms = now_ms;
+    const uint16_t command = (uint16_t)((slot[1] << 8) | (slot[0] & 0x1f));
+    if (command == RFUCMD_SEND_BLOCK_INIT || (command & 0xff00) == RFUCMD_SEND_BLOCK) c->answering = true;
+    if (command != RFUCMD_READY_EXIT_STANDBY || reply_capacity < 73) return 0;
+    const int round = rd16(slot + 2);
+    if (round > gl.last_round) return 0;
+    /* Retry of a round the GBA has left: its answer never reached this child, and the GBA
+       does not send it again. */
+    log_event(now_ms, EV_REANSWER, (uint8_t)(2 + child), (uint16_t)round, (uint16_t)round);
+    printf("LDN_BRIDGE Switch client %u is retrying standby round %d that the GBA already left, answering for it\n",
+           c->slot, round);
+    return build_round_answer(reply, gl.header, (uint16_t)round);
+}
+
+size_t trade_shim_group_inject(int child, int64_t now_ms, uint8_t *out, size_t capacity)
+{
+    if (child < 0 || child >= GROUP_CHILDREN || capacity < 73) return 0;
+    group_child_t *c = &gl.child[child];
+    if (!c->connected || gl.request_type < 0 || c->answering || c->attempts >= TRADE_SHIM_MAX_REREQUESTS) return 0;
+    const int64_t since = c->attempts ? c->repeated_at : gl.request_at;
+    if (now_ms - since < TRADE_SHIM_LEAD_REREQUEST_MS || now_ms - c->last_command_ms < TRADE_SHIM_REREQUEST_MS) return 0;
+    /* Refused by the child's link layer, busy in a standby round; the GBA asks once.
+       Request only: its own block already went out. */
+    ++c->attempts;
+    c->repeated_at = now_ms;
+    log_event(now_ms, EV_REREQUEST, (uint8_t)c->attempts, (uint16_t)gl.request_type, (uint16_t)child);
+    printf("LDN_BRIDGE Switch client %u has not answered the GBA's block request %d, repeating it (attempt %d)\n",
+           c->slot, gl.request_type, c->attempts);
+    memset(out, 0, 73);
+    memcpy(out, gl.header, 3);
+    wr16(out + 3, RFUCMD_SEND_BLOCK_REQ);
+    wr16(out + 5, (uint16_t)gl.request_type);
+    return 73;
 }
 
 void trade_shim_adapter_counts(uint8_t *queue_high, uint16_t *queue_drops, uint8_t *sheds, uint16_t *uart_overflows)

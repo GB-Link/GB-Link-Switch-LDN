@@ -311,6 +311,11 @@ public:
     ComState comstate = comIdWait;
     RfuState state = stIdle;
 
+    // When the GBA last looked for a group to join (a search started or polled),
+    // on the transfer clock; searched stays false until it first does.
+    bool searched = false;
+    uint32_t lastSearchMs = 0;
+
     // Web-session role hint (SetMode variant byte; set once by the section
     // ctor after reset()). It gates nothing: FRLG never auto-connects, so the
     // Union Room runs symmetric and any member may host, scan and initiate.
@@ -493,7 +498,7 @@ public:
         // headroom to drain the inbound FIFO after a burst.
         // A host is unpaced (its game consumes via 0x26 polls, its recvQueue
         // is unused) except under peer backpressure, which trims both roles.
-        else if (dataAvail() && timeReached(nowMs, m_nextDataEvtMs))
+        else if ((state == stHost ? hostDataReady(nowMs) : dataAvail()) && timeReached(nowMs, m_nextDataEvtMs))
         {
             // Under a peer hint, both roles trim to flowTrimGapMs (~9%
             // slower); otherwise clients pace at the RF frame and hosts
@@ -1138,6 +1143,12 @@ private:
     bool m_respErr = false;  // its response is the error frame
     uint32_t m_nowMs = 0;    // clock of the transfer being consumed
 
+    void noteSearch()
+    {
+        lastSearchMs = m_nowMs;
+        searched = true;
+    }
+
     uint8_t m_timeoutFrames = defTimeoutFrames;
     uint8_t m_rtxMax = defRtxMax;
     // SYSCFG bits 16-17 encode the room size (0=5 players .. 3=2 players) as a
@@ -1225,6 +1236,22 @@ private:
             if (c.devid && c.pkt.count > d)
                 d = c.pkt.count;
         return d;
+    }
+
+    // A host waits for every client: a group then runs at its slowest member's pace, as on
+    // the cable, instead of the fastest one's while the others' frames pile up. Once the
+    // retransmission window is over, the clients that have data are delivered. One
+    // client: the same as dataAvail.
+    bool hostDataReady(uint32_t nowMs) const
+    {
+        bool any = false, all = true;
+        for (const auto& c : m_host.clients)
+        {
+            if (!c.devid) continue;
+            if (c.pkt.pending()) any = true;
+            else all = false;
+        }
+        return any && (all || timeReached(nowMs, m_rtxDeadlineMs));
     }
 
     bool dataAvail() const
@@ -1785,11 +1812,13 @@ private:
                 return 1;
 
             case CMD_BCRD_START:
+                noteSearch();
                 return 0;
 
             case CMD_BCRD_STOP:
             case CMD_BCRD_FETCH:
             {
+                if (m_cmd == CMD_BCRD_FETCH) noteSearch();
                 // gpsp picks up to 4 random valid peers; a rotated scan over
                 // the 4-entry table keeps the same fairness.
                 uint32_t cnt = 0;
