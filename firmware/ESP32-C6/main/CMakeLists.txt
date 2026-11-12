@@ -1,8 +1,11 @@
 include("${CMAKE_CURRENT_LIST_DIR}/../../common/SOURCES.cmake")
 
+# Whole archive: xiao_c6_board.c replaces the weak board hooks in ldn_probe.c, and nothing
+# else references it, so the linker would otherwise keep the weak ones.
 idf_component_register(
     SRCS ${BRIDGE_SOURCES} ${BRIDGE_TRANSPORT_USB} "xiao_c6_board.c"
     INCLUDE_DIRS "." "${BRIDGE_COMMON}"
     REQUIRES ${BRIDGE_REQUIRES} esp_driver_usb_serial_jtag
+    WHOLE_ARCHIVE
 )
 bridge_pin_wifi_driver(esp32c6 "6cd630f338006fdb7dde1f895eeceff653b1c97fdc8e6b7daeac20759690edbf")

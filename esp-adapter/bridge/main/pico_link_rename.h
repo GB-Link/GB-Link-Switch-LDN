@@ -1,0 +1,30 @@
+#pragma once
+/* pico_link.h's functions under a part's own names, so the GB-Link link and the on-chip
+   adapter link build side by side for pico_link_select.c. The including file defines
+   PICO_LINK_RENAME(name) first. */
+
+#define pico_link_start PICO_LINK_RENAME(start)
+#define pico_link_set_port PICO_LINK_RENAME(set_port)
+#define pico_link_port PICO_LINK_RENAME(port)
+#define pico_link_feed_host PICO_LINK_RENAME(feed_host)
+#define pico_link_poll_host_out PICO_LINK_RENAME(poll_host_out)
+#define pico_link_stop PICO_LINK_RENAME(stop)
+#define pico_link_running PICO_LINK_RENAME(running)
+#define pico_link_write PICO_LINK_RENAME(write)
+#define pico_link_send PICO_LINK_RENAME(send)
+#define pico_link_poll_inbound PICO_LINK_RENAME(poll_inbound)
+#define pico_link_set_mode PICO_LINK_RENAME(set_mode)
+#define pico_link_mode_sent PICO_LINK_RENAME(mode_sent)
+#define pico_link_await_mode PICO_LINK_RENAME(await_mode)
+#define pico_link_wrong_cable PICO_LINK_RENAME(wrong_cable)
+#define pico_link_gba_active PICO_LINK_RENAME(gba_active)
+#define pico_link_gba_search_age_ms PICO_LINK_RENAME(gba_search_age_ms)
+#define pico_link_reset_inbound PICO_LINK_RENAME(reset_inbound)
+#define pico_link_bootsel PICO_LINK_RENAME(bootsel)
+#define pico_link_swap PICO_LINK_RENAME(swap)
+#define pico_link_swapped PICO_LINK_RENAME(swapped)
+#define pico_link_probe PICO_LINK_RENAME(probe)
+#define pico_link_stats PICO_LINK_RENAME(stats)
+#define pico_link_first_frame PICO_LINK_RENAME(first_frame)
+#define pico_link_frame_log PICO_LINK_RENAME(frame_log)
+#define pico_link_status_log PICO_LINK_RENAME(status_log)

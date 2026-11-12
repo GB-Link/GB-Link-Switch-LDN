@@ -1,19 +1,26 @@
 // The Switch linked with another player over the Celio server: a Game Boy Advance on a
 // GB-Link, an emulator, or another Switch through this page. The page stands in for a Celio
-// client and its GB-Link adapter, and reports itself as one (0xFF02).
-// The server makes the first such adapter in a session the master and every other one the
-// slave; emulators (0xFF01) are always slaves. A master adapter clocks its GBA, the child
-// (player 1); a slave's GBA clocks the link, the parent (player 0). So the page plays:
-// - slave: the parent, as CableTranslator, with the Switch leading a group it joins;
-// - master: the child, as ReverseTranslator, leading a group the Switch joins.
+// client and its GB-Link adapter, and reports itself as one.
+// The server seats the players in the order they press Start. Seat 0's adapter leaves its
+// GBA to clock the link, the parent (player 0); the others clock theirs, children. So the
+// page plays:
+// - seat 0: the parent, as CableTranslator, with the Switch leading a group it joins;
+// - seat 1: the child, as ReverseTranslator, leading a group the Switch joins.
+// The page links two players; a session for more is left with a note.
 //
-// Celio protocol (Celio-Server session.ts, Celio-Client linkExchangeSession.ts and
-// commandEmitter.socketIO.ts): the server pairs two clients by session id. deviceData goes
-// as batches of { sequence, data[32] }, each sent again until acknowledged with up to 64 in
-// flight; the server drops sequences it has and relays the rest the same way, so they can
-// arrive out of order and twice. Link statuses go to the server only, in order and
-// acknowledged, and it answers with device commands; commands and session events carry a
-// uuid and come again until acknowledged.
+// Celio protocol (Celio-Server 4_player session.ts, Celio-Client linkExchangeSession.ts and
+// the GB-Link firmware's online mode): a session is made for a number of players, and every
+// one of them hears partyReady once it is full. A client's link statuses go to the server
+// only, in order and acknowledged, and it answers with device commands: the seat and player
+// count (PlayerSettings), StartHandshake once every player's game is ready, and ConnectLink
+// for the children once seat 0 has linked. The game's link moves an eight-word command per
+// player each frame (a window); a client sends its own game's windows three to a packet of
+// 51 bytes, each window as [seat, eight words little-endian], skipping packets with no
+// command in them. Packets go as batches of { sequence, data }, numbered from 0 per client,
+// each sent again until acknowledged with up to 64 in flight; the server puts them in order
+// and relays them to every other player, numbered again for each, so they can arrive out of
+// order and twice. Commands and session events carry a uuid and come again until
+// acknowledged.
 
 import { SocketIo } from './socketio.js';
 import { CableTranslator, CMD_WORDS } from './translator.js';
@@ -22,50 +29,54 @@ import { RfuLeader } from './leader.js';
 import { GB_CHANNEL, GbFrameParser } from '../wire.js';
 import { FrameReader, RFU, clientFrame, command, toGbFrames } from '../trade/adapter.js';
 
-export const CELIO_SERVER = 'wss://celio-server.up.railway.app';
+// The server with the 2-4 player protocol. The one at celio-server.up.railway.app still
+// speaks the earlier, two-player one.
+export const CELIO_SERVER = 'wss://celio-server-staging.up.railway.app';
 
-const STATUS = { AWAIT_MODE: 0xff02, HANDSHAKE_RECEIVED: 0xff03, LINK_CONNECTED: 0xff05, LINK_RECONNECTING: 0xff06, LINK_CLOSED: 0xff07 };
-const COMMAND = { SET_MODE_MASTER: 0x10, SET_MODE_SLAVE: 0x11, START_HANDSHAKE: 0x12, CONNECT_LINK: 0x13 };
+const STATUS = { AWAIT_PLAYER_SETTINGS: 0xff02, HANDSHAKE_RECEIVED: 0xff03, LINK_CONNECTED: 0xff05, LINK_RECONNECTING: 0xff06, LINK_CLOSED: 0xff07 };
+const COMMAND = { PLAYER_SETTINGS: 0x10, START_HANDSHAKE: 0x12, CONNECT_LINK: 0x13 };
+const PLAYERS = 2;
 
-// The other adapter plays one command per cable packet, about 40 a second as master.
-const PACKET_MS = 26;
-const BATCH = 4;
-const AHEAD = 4;               // slots produced ahead of the estimate
-const REOPEN_MS = 400;         // the adapter's pause before a new section
-// As the slave, a section's commands wait for the master's adapter to have linked with its
-// GBA (the server's ConnectLink, sent when the master reports LinkConnected): a command that
-// reaches it while it is still linking stops the link coming up, and its GBA errors. Without
-// that word after this long, they go anyway.
-const PEER_WAIT_MS = 4000;
+// One window per GBA frame, as a parent GBA clocks the link.
+export const WINDOW_MS = 1000 / 59.7275;
+const WINDOWS_PER_PACKET = 3;
+const BLOCK_BYTES = 1 + CMD_WORDS * 2;
+const PACKET_BYTES = WINDOWS_PER_PACKET * BLOCK_BYTES;
+const AHEAD = WINDOWS_PER_PACKET;   // windows produced ahead of the clock
+const REOPEN_MS = 400;              // the adapter's pause before a new section
 const FRAME_MS = 1000 / 59.7275;
 const DATA_IN_FLIGHT = 64;
+// An adapter shows a GBA these statuses as the end of a section when they lead a command.
+const CLOSING_STATUSES = new Set([0xff02, 0xff06, 0xff07]);
 
 const uuid = () => crypto.randomUUID();
+const isCloseKey = (words) => words[0] === 0xcafe && (words[1] & 0xff) === 0x17;
 
-// The cable side over Celio. onRole(master) is called once the server has chosen, and
-// returns the game side: { gameCommand, nextCommand, reset, ready }.
+// The cable side over Celio. onRole(seat) is called once the server has seated the page,
+// and returns the game side: { gameCommand, nextCommand, reset, ready }. onRefused(reason)
+// tells of a session the page cannot play: 'players' (with the count) or 'old-server'.
 export class CelioLink {
-    constructor(socket, { onRole, log = () => {} }) {
+    constructor(socket, { onRole, onRefused = () => {}, log = () => {} }) {
         this.socket = socket;
         this.onRole = onRole;
+        this.onRefused = onRefused;
         this.game = null;
         this.log = log;
         this.running = false;
-        this.master = null;           // null until the server has chosen
+        this.seat = null;             // null until the server has seated the page
         this.partner = false;
         this.connected = false;       // a section is up
-        this.peerUp = false;          // the other adapter has linked with its GBA: commands go out
-        this.waiting = false;         // told the server our GBA is ready, awaiting the other
-        this.handshake = false;       // master: the handshake started, awaiting the slave
+        this.waiting = false;         // told the server our GBA is ready, awaiting the others
+        this.handshake = false;       // a child: the handshake started, awaiting seat 0's link
         this.closed = false;          // the link ended for good (EXIT_ROOM)
         this.readyAfter = 0;
         this.sequence = 0;
         this.expected = 0;
         this.buffered = new Map();
-        this.batch = [];
+        this.windows = [];            // this section's windows not yet sent
         this.cafeStreak = 0;
         this.since = 0;
-        this.slots = 0;
+        this.made = 0;                // windows made this section
         this.sentClose = false;
         this.gotClose = false;
         this.exitSeen = false;
@@ -82,6 +93,7 @@ export class CelioLink {
     status(value) {
         const packet = { uuid: uuid(), linkStatus: value };
         this.statuses = this.statuses.then(() => this.socket.requestWithRetry('deviceStatus', packet))
+            .then(([accepted] = []) => { if (accepted === false) this.log(`the server refused link status ${value.toString(16)}`); })
             .catch((error) => this.log(`the server did not take a link status: ${error.message}`));
     }
 
@@ -97,6 +109,7 @@ export class CelioLink {
             // The other side plays sequences in order and cannot skip one: no giving up while
             // the socket is up.
             this.socket.requestWithRetry('deviceData', [next], { retries: Infinity, stop: () => !this.running })
+                .then(([accepted] = []) => { if (accepted === false) this.log('the server refused a data packet'); })
                 .catch((error) => this.log(`the server did not take data: ${error.message}`))
                 .finally(() => { this.inFlight--; this.fillData(); });
         }
@@ -112,7 +125,7 @@ export class CelioLink {
         if (this.running) return;
         this.running = true;
         this.timer = setInterval(() => this.pump(), 8);
-        this.status(STATUS.AWAIT_MODE);
+        this.status(STATUS.AWAIT_PLAYER_SETTINGS);
     }
 
     stop() {
@@ -122,9 +135,9 @@ export class CelioLink {
         this.setConnected(false);
     }
 
-    // The server's "both ready" check passes with one client alone, so our GBA is reported
-    // ready only while the other user is in the session; as the child, only once it can
-    // answer the parent (the Switch's player is known).
+    // The server starts the handshake once every player in the session is ready, however
+    // few they are, so our GBA is reported ready only while the session is full; as the
+    // child, only once it can answer the parent (the Switch's player is known).
     setPartner(present) {
         this.partner = present;
         this.maybeReady();
@@ -142,30 +155,30 @@ export class CelioLink {
         if (!packet || this.commands.has(packet.uuid)) return;
         this.commands.add(packet.uuid);
         switch (packet.command) {
-            case COMMAND.SET_MODE_SLAVE:
-            case COMMAND.SET_MODE_MASTER:
-                if (this.master !== null) break;
-                this.master = packet.command === COMMAND.SET_MODE_MASTER;
-                this.game = this.onRole(this.master);
+            case COMMAND.PLAYER_SETTINGS: {
+                if (this.seat !== null) break;
+                const count = packet.args?.playerCount, seat = packet.args?.playerIndex;
+                // The two-player server's SetModeMaster has the same number and no seat.
+                if (!Number.isInteger(count) || !Number.isInteger(seat)) { this.onRefused('old-server'); break; }
+                if (count !== PLAYERS || seat < 0 || seat >= count) { this.onRefused('players', count); break; }
+                this.seat = seat;
+                this.game = this.onRole(seat);
                 this.maybeReady();
                 break;
+            }
             case COMMAND.START_HANDSHAKE:
                 if (!this.waiting) break;
                 this.waiting = false;
                 this.game.reset();
                 this.sentClose = this.gotClose = this.exitSeen = false;
-                this.batch = [];
+                this.windows = [];
                 this.cafeStreak = 0;
-                // The master's link is up once the slave's is.
-                if (this.master) this.handshake = true;
-                else this.up();
+                // Seat 0's game links at once; a child's once seat 0 has (ConnectLink).
+                if (this.seat === 0) this.up();
+                else this.handshake = true;
                 break;
             case COMMAND.CONNECT_LINK:
-                if (!this.master) {
-                    if (this.connected && !this.peerUp) this.startSending('the other Game Boy Advance is linked');
-                    break;
-                }
-                if (!this.handshake) break;
+                if (this.seat === 0 || !this.handshake) break;
                 this.handshake = false;
                 this.up();
                 break;
@@ -174,25 +187,15 @@ export class CelioLink {
 
     up() {
         this.since = performance.now();
-        this.slots = 0;
-        // The master's ConnectLink came after its partner (the slave) linked: it sends at once.
-        this.peerUp = this.master;
+        this.made = 0;
         this.setConnected(true);
         this.status(STATUS.LINK_CONNECTED);
         this.log('the other Game Boy Advance\'s link is open');
     }
 
-    startSending(why) {
-        this.peerUp = true;
-        this.since = performance.now();
-        this.slots = 0;
-        this.log(why);
-    }
-
     // Packets may arrive out of order and twice: played in sequence order, once.
     onData(packet) {
-        if (!packet || !Array.isArray(packet.data)) return;
-        if (!Number.isInteger(packet.sequence) || packet.sequence < this.expected) return;
+        if (!packet || !Number.isInteger(packet.sequence) || packet.sequence < this.expected) return;
         this.buffered.set(packet.sequence, packet.data);
         while (this.buffered.has(this.expected)) {
             const data = this.buffered.get(this.expected);
@@ -202,13 +205,18 @@ export class CelioLink {
         }
     }
 
+    // The other player's windows, each as its command for our game. An adapter drops what
+    // comes between sections; a child's keeps what its parent sends during the handshake.
     deliver(data) {
-        if (!this.connected && !this.handshake) return;
-        for (let c = 0; c < BATCH; c++) {
-            const words = data.slice(c * CMD_WORDS, (c + 1) * CMD_WORDS).map((w) => w & 0xffff);
+        if ((!this.connected && !this.handshake) || !Array.isArray(data) || data.length !== PACKET_BYTES) return;
+        for (let o = 0; o < PACKET_BYTES; o += BLOCK_BYTES) {
+            if (data[o] === this.seat || data[o] >= PLAYERS) continue;
+            const words = [];
+            for (let i = 0; i < CMD_WORDS; i++) words.push((data[o + 1 + i * 2] & 0xff) | (data[o + 2 + i * 2] & 0xff) << 8);
+            if (CLOSING_STATUSES.has(words[0])) words[0] = 0x5fff;
             if (!words.some((w) => w)) continue;
             if (words[0] === 0x5fff) this.gotClose = true;
-            if (words[0] === 0xcafe && (words[1] & 0xff) === 0x17) this.exitSeen = true;
+            if (isCloseKey(words)) this.exitSeen = true;
             this.game.gameCommand(words);
         }
         this.checkClose();
@@ -216,31 +224,34 @@ export class CelioLink {
 
     pump() {
         if (!this.connected) { this.maybeReady(); return; }
-        if (!this.peerUp) {
-            if (performance.now() - this.since < PEER_WAIT_MS) return;
-            this.startSending('the other Game Boy Advance did not report its link: sending anyway');
-        }
-        const played = Math.floor((performance.now() - this.since) / PACKET_MS);
-        while (this.slots < played + AHEAD) {
-            let words = this.game.nextCommand() ?? new Array(CMD_WORDS).fill(0);
-            words = words.map((w) => w & 0xffff);
+        const due = Math.floor((performance.now() - this.since) / WINDOW_MS) + AHEAD;
+        while (this.made < due) {
+            let words = (this.game.nextCommand() ?? new Array(CMD_WORDS).fill(0)).map((w) => w & 0xffff);
             if (words[0] === 0x5fff) this.sentClose = true;
-            if (words[0] === 0xcafe && (words[1] & 0xff) === 0x17) this.exitSeen = true;
-            // Like the adapter: a run of "no key" reports travels as its first one.
+            if (isCloseKey(words)) this.exitSeen = true;
+            // Like the adapter: from the second "no key" report in a row, the window goes empty.
             if (words[0] === 0xcafe && words[1] === 0x11) {
                 if (this.cafeStreak++ > 0) words = new Array(CMD_WORDS).fill(0);
-            } else if (words.some((w) => w)) this.cafeStreak = 0;
-            this.batch.push(words);
-            this.slots++;
-            if (this.batch.length === BATCH) this.flush();
+            } else this.cafeStreak = 0;
+            this.windows.push(words);
+            this.made++;
+            if (this.windows.length === WINDOWS_PER_PACKET) this.flush();
             if (this.checkClose()) return;
         }
     }
 
+    // A packet of our windows, those not filled left at zero (seat 0, no command), as the
+    // adapter leaves them; one with no command in it is not sent.
     flush() {
-        const data = this.batch.flat();
-        this.batch = [];
-        if (!data.some((w) => w)) return;
+        const windows = this.windows;
+        this.windows = [];
+        if (!windows.some((words) => words.some((w) => w))) return;
+        const data = new Array(PACKET_BYTES).fill(0);
+        windows.forEach((words, b) => {
+            const o = b * BLOCK_BYTES;
+            data[o] = this.seat;
+            words.forEach((w, i) => { data[o + 1 + i * 2] = w & 0xff; data[o + 2 + i * 2] = w >> 8; });
+        });
         this.sendData({ sequence: this.sequence++, data });
     }
 
@@ -248,10 +259,7 @@ export class CelioLink {
     // adapter does; EXIT_ROOM before it ends the link.
     checkClose() {
         if (!this.connected || !this.sentClose || !this.gotClose) return false;
-        if (this.batch.length) {
-            while (this.batch.length < BATCH) this.batch.push(new Array(CMD_WORDS).fill(0));
-            this.flush();
-        }
+        this.flush();
         this.setConnected(false);
         if (this.exitSeen) {
             this.closed = true;
@@ -317,24 +325,45 @@ export class CelioSession extends EventTarget {
             }
             handler();
         };
-        socket.on('partnerJoined', once(() => { this.partner = true; this.link?.setPartner(true); this.changed(); }));
-        socket.on('partnerLeft', once(() => { this.partner = false; this.link?.setPartner(false); this.notice('The other player left the session.'); this.changed(); }));
+        // partyReady can come before the answer to the join that filled the session.
+        socket.on('partyReady', once(() => { this.partner = true; this.link?.setPartner(true); this.changed(); }));
+        socket.on('partyNotReady', once(() => { this.partner = false; this.link?.setPartner(false); this.notice('The other player left the session.'); this.changed(); }));
         socket.on('sessionClose', once(() => { this.notice('The session has ended.', ''); this.end(); }));
+        // Only the two-player server sends this.
+        socket.on('partnerJoined', once(() => this.refuse('old-server')));
         socket.addEventListener('disconnect', () => { this.notice('Lost the connection to the Celio server.', 'bad'); this.end(); });
         await socket.connect();
     }
 
-    async create() { return this.enter('sessionCreate', null); }
-    async join(id) { return this.enter('sessionJoin', id); }
+    async create() { return this.enter('sessionCreate', PLAYERS); }
+
+    async join(id) {
+        if (!/^\d{4}$/.test(id)) throw new Error('A Session Id is four digits.');
+        return this.enter('sessionJoin', id);
+    }
 
     async enter(event, arg) {
         if (!this.socket?.connected) await this.open();
         const [result] = await this.socket.request(event, arg);
         if (result?.variant !== 'Ok') throw new Error(result?.error ?? 'The Server refused');
+        // A two-player session is full once the second player is in.
+        if (event === 'sessionJoin' && !result.value.full) {
+            try { this.socket.emit('sessionLeft'); } catch {}
+            throw new Error('This session is for more than two players. The Switch plays in two-player sessions.');
+        }
         this.sessionId = result.value.id;
-        this.partner = event === 'sessionJoin' || Boolean(result.value.full);
+        this.partner = this.partner || Boolean(result.value.full);
         this.changed();
         return this.sessionId;
+    }
+
+    // A session this page cannot play: said, and left.
+    refuse(reason, count) {
+        const text = reason === 'players'
+            ? `This session is for ${count} players. The Switch plays in two-player sessions.`
+            : 'This Celio server speaks the earlier two-player protocol. Choose one with the 2–4 player protocol under Options.';
+        this.notice(text, 'bad');
+        this.leave();
     }
 
     // Takes the board's adapter port and starts linking.
@@ -351,7 +380,11 @@ export class CelioSession extends EventTarget {
                 }
             } catch (error) { this.fail(error); }
         };
-        this.link = new CelioLink(this.socket, { onRole: (master) => this.setRole(master), log: (message) => this.log(message) });
+        this.link = new CelioLink(this.socket, {
+            onRole: (seat) => this.setRole(seat !== 0),
+            onRefused: (reason, count) => this.refuse(reason, count),
+            log: (message) => this.log(message),
+        });
         this.link.onState = () => this.changed();
         this.running = true;
         esp.addEventListener('reattached', this.onReattached);
@@ -366,12 +399,12 @@ export class CelioSession extends EventTarget {
         this.changed();
     }
 
-    // The server's choice: as its slave the page is the parent and joins the Switch's group;
-    // as its master the page is the child and leads a group the Switch joins.
-    setRole(master) {
-        this.role = master ? 'child' : 'parent';
-        this.log(master ? 'the other Game Boy Advance is the parent: the Switch joins this page\'s group' : 'the other Game Boy Advance is the child: this page joins the Switch\'s group');
-        if (!master) {
+    // The page's seat: in seat 0 it is the parent and joins the Switch's group; in seat 1 it
+    // is the child and leads a group the Switch joins.
+    setRole(child) {
+        this.role = child ? 'child' : 'parent';
+        this.log(child ? 'the other Game Boy Advance is the parent: the Switch joins this page\'s group' : 'the other Game Boy Advance is the child: this page joins the Switch\'s group');
+        if (!child) {
             const toBoard = (frame) => this.esp.sendAdapter(toGbFrames(frame));
             const translator = new CableTranslator({
                 send: (payload) => toBoard(clientFrame(payload)),
@@ -379,6 +412,7 @@ export class CelioSession extends EventTarget {
                 disconnect: () => toBoard(command(RFU.DISCONNECT, 0)),
                 log: (message) => this.log(message),
                 holdJoin: true,
+                packetMs: WINDOW_MS,
             });
             translator.onLinked = () => this.changed();
             translator.bypassNationally = this.bypassNationally;
@@ -394,7 +428,7 @@ export class CelioSession extends EventTarget {
             reset: () => this.translator?.cableReset(),
             // Each side is ready once its Switch is: leading a group the page has seen, or
             // waiting in the page's group. Joining, and the player exchange, come after.
-            ready: () => Boolean(master ? this.translator?.ready : this.translator?.readyToLink),
+            ready: () => Boolean(child ? this.translator?.ready : this.translator?.readyToLink),
         };
     }
 
@@ -405,7 +439,7 @@ export class CelioSession extends EventTarget {
         const toBoard = (frame) => this.esp.sendAdapter(toGbFrames(frame));
         const log = (message) => this.log(message);
         const leader = this.leader = new RfuLeader({ send: toBoard, log });
-        const translator = new ReverseTranslator({ leader, activity, log });
+        const translator = new ReverseTranslator({ leader, activity, log, packetMs: WINDOW_MS });
         translator.onReady = () => this.changed();
         translator.onOtherChoice = () => this.changed();
         translator.onRefused = (reason) => {

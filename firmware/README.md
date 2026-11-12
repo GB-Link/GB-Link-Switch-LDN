@@ -25,8 +25,10 @@ probably swapped: `LDN_PICO_SWAP` swaps them in software until the next restart.
 
 Tested boards: Seeed Studio XIAO ESP32-S3 (attach its antenna), ESP32-S3-N16R8,
 M5Stack AtomS3, Seeed Studio XIAO ESP32-C6, a DOIT ESP32 DEVKIT V1 and an ESP32-C3
-board. On the XIAO ESP32-C6, `LDN_ANTENNA 0|1` picks the onboard or external antenna.
-The Seeed Studio XIAO ESP32-C5 has no onboard antenna: attach its external one.
+board. When it starts, the XIAO ESP32-C6 tries its onboard and external antennas on the
+Wi-Fi traffic around it and keeps the one that hears it better, so an antenna plugged into
+its U.FL socket is used without a setting. `LDN_ANTENNA 0|1` picks one by hand. The Seeed
+Studio XIAO ESP32-C5 has no onboard antenna: attach its external one.
 
 ## Building
 
@@ -67,16 +69,21 @@ LDN_KEYS
 ## How it works
 
 - The board only joins or hosts a room while a GB-Link adapter (or the web client) is
-  connected, so a board that is just plugged into a PC stays out of the way.
+  connected, so a board that is just plugged into a PC stays out of the way. With GB-Link
+  firmware that reports when the GBA looks for a group, and with the web client's
+  emulator, it joins a Switch's room only while the GBA's player looks for one (JOIN
+  GROUP, or the Union Room), and leaves when the player stops looking without joining.
 - **Switch leads:** the board joins the Switch's room and shows it to the GBA as a
   wireless group.
-- **GBA leads:** the board hosts a room that looks like a Switch's, and the Switch
-  joins it.
+- **GBA leads:** the board hosts a room that looks like a Switch's, and the Switches
+  join it: one for a trade or a two-player battle, up to three for a multi battle.
 - The link between the two games is lockstep and the wireless adds lag, so
   `trade_shim.c` smooths over the differences: the Switch version runs one extra
   standby step after a trade, lost messages are resent, and old d-pad reports are
   dropped when they pile up so walking stays responsive.
-- When a session ends, the board restarts and is ready again in about ten seconds.
+- When a session ends, the board is ready again within a few seconds. When the web client
+  carries the adapter over USB, the board restarts instead and is ready again in about ten
+  seconds.
 
 ## Console commands
 
@@ -93,12 +100,6 @@ LDN_KEYS
 
 Some serial tools reset the board when they open the port (DTR). Open it with DTR high
 and RTS low. The original ESP32's console runs at 921600 baud.
-
-## Tests
-
-`tools/` has tests that run on a PC with no hardware: `trade_shim_test.c`,
-`pia_host_test.c`, `ldn_host_test.c` and `pico_link_test.c`. The build command is at the
-top of each file.
 
 ## Troubleshooting
 

@@ -50,12 +50,14 @@ bool pico_link_poll_inbound(uint8_t *frame, size_t capacity, size_t *length);
 
 /* Resend SetMode(rfuWireless). Sent on start and retried until the Pico answers. */
 void pico_link_set_mode(void);
-/* Block until the adapter TX queue has drained. */
-void pico_link_flush(void);
 uint32_t pico_link_mode_sent(void);
 bool pico_link_await_mode(void);
 bool pico_link_wrong_cable(void);
 bool pico_link_gba_active(void);
+/* How long ago the GBA last looked for a group to join, in ms (INT64_MAX before it has);
+   -1 when its adapter does not report searches (GB-Link firmware without the reports, or
+   a host-port client that sends none). */
+int64_t pico_link_gba_search_age_ms(void);
 
 /* Drop frames buffered before the host was listening. */
 void pico_link_reset_inbound(void);

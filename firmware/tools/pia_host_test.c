@@ -6,6 +6,9 @@
    the joiner in order in the expected WT wrapper or are counted as dropped by the host's
    pacing. Then teardown. Host datagrams are decrypted and checked against the layouts a
    Switch host sends.
+   A group scenario has three joiners in one room: each hears the others in the station
+   lists and probes them, connects one at a time, gets its own slot, and the GBA's frames
+   reach all of them; one is dropped and the other two carry on.
 
    PSA crypto calls from pia_crypto.c use OpenSSL; the vendored zstd decoder is built in.
    Build and run from the firmware directory:
@@ -195,11 +198,11 @@ int64_t esp_timer_get_time(void) { return g_now_us; }
 #define JOINER_IP "169.254.47.2"
 #define PIPE_SLOTS 512
 
-typedef struct { uint8_t data[PIA_MAX_DATAGRAM]; size_t len; int due, order; bool used; } datagram_t;
+typedef struct { uint8_t data[PIA_MAX_DATAGRAM]; size_t len; int due, order, from; bool used; } datagram_t;
 typedef struct { datagram_t q[PIPE_SLOTS]; double loss, reorder; int sent, dropped, delayed, order; } pipe_t;
 static pipe_t g_to_joiner, g_to_host;
 
-static void pipe_put(pipe_t *p, const uint8_t *data, size_t len)
+static void pipe_put_from(pipe_t *p, const uint8_t *data, size_t len, int from)
 {
     ++p->sent;
     if (chance() < p->loss) { ++p->dropped; return; }
@@ -212,12 +215,15 @@ static void pipe_put(pipe_t *p, const uint8_t *data, size_t len)
             p->q[i].len = len;
             p->q[i].due = due;
             p->q[i].order = p->order++;
+            p->q[i].from = from;
             p->q[i].used = true;
             return;
         }
     fprintf(stderr, "pipe full\n");
     exit(2);
 }
+
+static void pipe_put(pipe_t *p, const uint8_t *data, size_t len) { pipe_put_from(p, data, len, 0); }
 
 static datagram_t *pipe_take(pipe_t *p)
 {
@@ -518,9 +524,10 @@ static void host_send(const uint8_t *d, size_t n, const char *dest, void *user)
 }
 
 /* Child frame: 2-byte LLSF header + 14-byte slot, command word = counter. */
-static void host_deliver(const uint8_t *payload, size_t n, void *user)
+static void host_deliver(const uint8_t *payload, size_t n, int station, void *user)
 {
     (void)user;
+    CHECK_EQ(station, 0);
     if (n == 20) { g_byte8_length = (int)n; return; }   /* frame from inject_byte8_wt */
     if (n != 16) { ++g_child_bad_length; return; }
     CHECK(payload[0] == 0x0e && payload[1] == 0x10);
@@ -643,14 +650,14 @@ static void run_session(uint32_t seed)
     reset_all();
 
     /* Station handshake: status, join, station list, probes. */
-    pia_host_station_joined(&g_host, kJoinerMac, JOINER_IP, 1);
-    CHECK_EQ(g_host.state, 1);
+    CHECK_EQ(pia_host_station_joined(&g_host, kJoinerMac, JOINER_IP, 1), 0);
+    CHECK_EQ(g_host.st[0].state, 1);
     int t0 = g_tick;
-    while (!(pia_conn_connected(&g_link.conn) && pia_host_session_up(&g_host)) && g_tick - t0 < 300) step();
+    while (!(pia_conn_connected(&g_link.conn) && pia_host_session_up(&g_host, 0)) && g_tick - t0 < 300) step();
     CHECK(pia_conn_connected(&g_link.conn));
-    CHECK(pia_host_session_up(&g_host));
-    CHECK(g_host.status_acked);
-    CHECK_EQ(g_host.station_id, g_link.conn.our_id);
+    CHECK(pia_host_session_up(&g_host, 0));
+    CHECK(g_host.st[0].status_acked);
+    CHECK_EQ(g_host.st[0].id, g_link.conn.our_id);
     CHECK_EQ(g_link.conn.host_id, g_host.our_id);
     CHECK_EQ(g_h.status, 1);
     CHECK_EQ(g_h.status_seq_first, 2);
@@ -664,19 +671,19 @@ static void run_session(uint32_t seed)
     /* Probes both ways to fill the host's RTT window. */
     for (int i = 0; i < 60; ++i) step();
     CHECK(g_h.replies >= 2);
-    CHECK(g_host.reliable.sample_count >= 1);
+    CHECK(g_host.st[0].reliable.sample_count >= 1);
 
     /* Joiner WC -> bridge -> WA. */
     pia_link_set_connect(&g_link, true);
     t0 = g_tick;
-    while (!pia_host_connect_pending(&g_host) && g_tick - t0 < 60) step();
-    CHECK(pia_host_connect_pending(&g_host));
-    CHECK(memcmp(g_host.connect_id, g_link.connect_id, 2) == 0);
+    while (pia_host_connect_pending(&g_host) < 0 && g_tick - t0 < 60) step();
+    CHECK_EQ(pia_host_connect_pending(&g_host), 0);
+    CHECK(memcmp(g_host.st[0].connect_id, g_link.connect_id, 2) == 0);
     for (int i = 0; i < 3; ++i) step();       /* bridge delay asking the GBA */
     CHECK_EQ(g_h.wa, 0);
-    pia_host_accept(&g_host, true);
-    CHECK(g_host.child_accepted);
-    CHECK(!pia_host_connect_pending(&g_host));
+    pia_host_accept(&g_host, 0, true, 0);
+    CHECK(g_host.st[0].child_accepted);
+    CHECK_EQ(pia_host_connect_pending(&g_host), -1);
     t0 = g_tick;
     while (!g_link.accepted && g_tick - t0 < 60) step();
     CHECK(g_link.accepted);
@@ -693,14 +700,14 @@ static void run_session(uint32_t seed)
     CHECK_EQ(g_h.wg_values[0], 0);
     CHECK(g_h.property_checked);
     CHECK_EQ(g_h.property, 1);
-    CHECK(g_host.property_acked);
+    CHECK(g_host.st[0].property_acked);
 
     /* Join phase: parent NI frames, sent as WT with padded data. */
     static const uint8_t ni[8] = {0x05, 0x48, 0x04, 0x00, 0x05, 0x00, 0x01, 0x00};
     pia_host_parent_frame(&g_host, ni, 8);
     pia_host_parent_frame(&g_host, ni, 5);
     step(); step();
-    CHECK_EQ(g_host.parent_frames, 2);
+    CHECK_EQ(g_host.st[0].parent_frames, 2);
     CHECK_EQ(g_h.wg, 1);
 
     /* 2000 ticks: parent command frame every tick, child frame every other tick,
@@ -714,7 +721,7 @@ static void run_session(uint32_t seed)
         parent_command_frame(parent_counter++);
         if (i % 2 == 0) child_frame(child_counter++);
         step();
-        int lag = (parent_counter - 1) - g_parent_delivered - g_host.parent_dropped;
+        int lag = (parent_counter - 1) - g_parent_delivered - g_host.st[0].parent_dropped;
         if (lag > worst_lag) worst_lag = lag;
         CHECK(lag < 90);
         if (g_failures > 20) { printf("  too many failures, stopping\n"); break; }
@@ -727,43 +734,43 @@ static void run_session(uint32_t seed)
     printf("  exchange: parent %d/%d child %d/%d worst lag %d, host resends %d (%d copies on the wire),"
            " host holds dropped %d, joiner reordered %d overflow %d, loss %d/%d and %d/%d\n",
            g_parent_delivered, parent_counter - 1, g_child_delivered, child_counter - 1, worst_lag,
-           g_host.resends, g_h.retransmits, g_host.hold_dropped, g_link.reordered, g_link.overflow,
+           g_host.st[0].resends, g_h.retransmits, g_host.st[0].hold_dropped, g_link.reordered, g_link.overflow,
            g_to_joiner.dropped, g_to_joiner.sent, g_to_host.dropped, g_to_host.sent);
     /* Each parent frame is delivered or dropped by host pacing. Pacing follows the
        child's datagram cadence, so the drop ratio here does not model a real child. */
-    CHECK_EQ(g_parent_delivered + g_host.parent_dropped, parent_counter - 1);
+    CHECK_EQ(g_parent_delivered + g_host.st[0].parent_dropped, parent_counter - 1);
     CHECK_EQ(g_child_delivered, child_counter - 1);
     CHECK_EQ(g_child_bad_length, 0);
-    CHECK_EQ(g_host.child_frames, child_counter - 1);
-    CHECK_EQ(g_host.hold_dropped, 0);
-    CHECK_EQ(g_host.decrypt_failures, 0);
-    CHECK_EQ(g_host.rx_bad_frame, 0);
-    CHECK_EQ(g_host.rx_unzip_fail, 0);
+    CHECK_EQ(g_host.st[0].child_frames, child_counter - 1);
+    CHECK_EQ(g_host.st[0].hold_dropped, 0);
+    CHECK_EQ(g_host.st[0].decrypt_failures, 0);
+    CHECK_EQ(g_host.st[0].rx_bad_frame, 0);
+    CHECK_EQ(g_host.st[0].rx_unzip_fail, 0);
     CHECK_EQ(g_link.overflow, 0);
     CHECK_EQ(g_link.out_count, 0);
     CHECK_EQ(g_link.hold_dropped, 0);
     CHECK_EQ(g_link.decrypt_failures, 0);
     CHECK_EQ(g_link.rx_bad_frame, 0);
-    CHECK(g_host.resends > 0);
-    CHECK(g_host.wk_acks > 0);
-    CHECK_EQ(pia_reliable_pending(&g_host.reliable), 0);
+    CHECK(g_host.st[0].resends > 0);
+    CHECK(g_host.st[0].wk_acks > 0);
+    CHECK_EQ(pia_reliable_pending(&g_host.st[0].reliable), 0);
     CHECK_EQ(pia_reliable_pending(&g_link.reliable), 0);
     CHECK_EQ(g_h.wg, 2);
     CHECK_EQ(g_h.wg_values[1], 1);
     CHECK(g_h.wt_before_uni_wg <= 8);      /* NI-phase only; WG 1 precedes the first UNI frame */
-    CHECK(g_host.reliable.sample_count == PIA_RTT_SAMPLES);
-    double rto = pia_reliable_rto(&g_host.reliable);
+    CHECK(g_host.st[0].reliable.sample_count == PIA_RTT_SAMPLES);
+    double rto = pia_reliable_rto(&g_host.st[0].reliable);
     CHECK(rto >= 40 && rto <= 250);
     CHECK(g_h.property == 1);
 
     /* Command-less frames replace each other in the queue and repeat when idle. */
     uint8_t plain_frame[73] = {0x46, 0x00, 0x05};
     for (int i = 0; i < 5; ++i) pia_host_parent_frame(&g_host, plain_frame, sizeof(plain_frame));
-    CHECK_EQ(g_host.parent_count, 1);
+    CHECK_EQ(g_host.st[0].parent_count, 1);
     int state_only = g_parent_state_only;
     for (int i = 0; i < 40; ++i) step();
     CHECK(g_parent_state_only - state_only >= 2);
-    CHECK_EQ(g_host.parent_count, 0);
+    CHECK_EQ(g_host.st[0].parent_count, 0);
 
     /* Child WT with length at byte 8, as a Switch child sends it. */
     inject_byte8_wt();
@@ -771,8 +778,8 @@ static void run_session(uint32_t seed)
 
     /* GBA drops the child: WD, then notices, broadcasts and two status updates for the
        removal. The station is then forgotten. */
-    pia_host_disconnect_child(&g_host);
-    CHECK(g_host.child_disconnected);
+    pia_host_disconnect_child(&g_host, 0);
+    CHECK(g_host.st[0].child_disconnected);
     t0 = g_tick;
     while (!g_link.host_disconnected && g_tick - t0 < 60) step();
     CHECK(g_link.host_disconnected);
@@ -780,15 +787,15 @@ static void run_session(uint32_t seed)
     CHECK(memcmp(g_h.wd_cid, g_link.connect_id, 2) == 0);
     int wt_at_wd = g_h.wt;
     t0 = g_tick;
-    while (g_host.state != 0 && g_tick - t0 < 1200) step();
-    CHECK_EQ(g_host.state, 0);
+    while (g_host.st[0].state != 0 && g_tick - t0 < 1200) step();
+    CHECK_EQ(g_host.st[0].state, 0);
     CHECK_EQ(g_h.wt, wt_at_wd);
     CHECK_EQ(g_h.kind9, 3);
     CHECK_EQ(g_h.kind13, 5);
     CHECK(g_h.status_marked >= 1 && g_h.status_marked <= 2);
     CHECK(g_h.status_cleared >= 1 && g_h.status_cleared <= 2);
     CHECK_EQ(g_h.status_seq_last, 4);
-    CHECK_EQ(g_host.decrypt_failures, 0);
+    CHECK_EQ(g_host.st[0].decrypt_failures, 0);
     printf("  teardown took %d ticks; %d probes, %d replies, %d acks, %d WT (%d idle), %d WG\n",
            g_tick - t0, g_h.probes, g_h.replies, g_h.acks, g_h.wt, g_h.wt_idle, g_h.wg);
 }
@@ -801,28 +808,29 @@ static void run_lossy_handshake(uint32_t seed)
     g_rng = seed;
     reset_all();
     g_to_host.loss = 1.0;          /* all joiner traffic lost for 40 ticks */
-    pia_host_station_joined(&g_host, kJoinerMac, JOINER_IP, 1);
+    CHECK_EQ(pia_host_station_joined(&g_host, kJoinerMac, JOINER_IP, 1), 0);
     for (int i = 0; i < 40; ++i) step();
     CHECK(g_h.status >= 2);
-    CHECK(!g_host.status_acked);
+    CHECK(!g_host.st[0].status_acked);
     g_to_host.loss = 0.3;
     g_to_joiner.loss = 0.3;
     int t0 = g_tick;
-    while (!(pia_conn_connected(&g_link.conn) && pia_host_session_up(&g_host)) && g_tick - t0 < 600) step();
+    while (!(pia_conn_connected(&g_link.conn) && pia_host_session_up(&g_host, 0)) && g_tick - t0 < 600) step();
     CHECK(pia_conn_connected(&g_link.conn));
-    CHECK(pia_host_session_up(&g_host));
+    CHECK(pia_host_session_up(&g_host, 0));
     g_to_host.loss = g_to_joiner.loss = 0;
     for (int i = 0; i < 40; ++i) step();
-    CHECK(g_host.status_acked);
-    CHECK(g_host.child_alive);
+    CHECK(g_host.st[0].status_acked);
+    CHECK(g_host.st[0].child_alive);
     printf("  status sent %d times, station list %d times, joined after %d ticks\n", g_h.status, g_h.kind5, g_tick - t0);
 }
 
-/* Parent queue rules, host with no station. */
+/* Parent queue rules, one station joined. */
 static void test_parent_queue(void)
 {
     printf("parent queue\n");
     reset_all();
+    CHECK_EQ(pia_host_station_joined(&g_host, kJoinerMac, JOINER_IP, 1), 0);
     uint8_t plain_frame[73] = {0x46, 0x00, 0x05};
     uint8_t carrier[73] = {0};
     uint8_t command[73] = {0x46, 0x00, 0x05, 0x00, 0x66};
@@ -830,40 +838,396 @@ static void test_parent_queue(void)
     pia_host_parent_frame(&g_host, plain_frame, 73);
     pia_host_parent_frame(&g_host, carrier, 73);
     pia_host_parent_frame(&g_host, plain_frame, 73);
-    CHECK_EQ(g_host.parent_count, 1);
+    CHECK_EQ(g_host.st[0].parent_count, 1);
     CHECK(g_host.has_idle && g_host.idle_len == 73);
     pia_host_parent_frame(&g_host, command, 73);
-    CHECK_EQ(g_host.parent_count, 2);
+    CHECK_EQ(g_host.st[0].parent_count, 2);
     pia_host_parent_frame(&g_host, plain_frame, 73);
     pia_host_parent_frame(&g_host, plain_frame, 73);
-    CHECK_EQ(g_host.parent_count, 3);
+    CHECK_EQ(g_host.st[0].parent_count, 3);
     pia_host_parent_frame(&g_host, ni, 4);
     pia_host_parent_frame(&g_host, ni, 4);
-    CHECK_EQ(g_host.parent_count, 5);
-    while (g_host.parent_count < PIA_HOST_PARENT_SLOTS) pia_host_parent_frame(&g_host, command, 73);
+    CHECK_EQ(g_host.st[0].parent_count, 5);
+    while (g_host.st[0].parent_count < PIA_HOST_PARENT_SLOTS) pia_host_parent_frame(&g_host, command, 73);
     pia_host_parent_frame(&g_host, plain_frame, 73);
-    CHECK_EQ(g_host.parent_count, PIA_HOST_PARENT_SLOTS);
-    CHECK_EQ(g_host.parent_dropped, 1);
+    CHECK_EQ(g_host.st[0].parent_count, PIA_HOST_PARENT_SLOTS);
+    CHECK_EQ(g_host.st[0].parent_dropped, 1);
     /* Queue full: oldest command-less frame is evicted, new command is kept. */
     pia_host_parent_frame(&g_host, command, 73);
-    CHECK_EQ(g_host.parent_count, PIA_HOST_PARENT_SLOTS);
-    CHECK_EQ(g_host.parent_dropped, 2);
+    CHECK_EQ(g_host.st[0].parent_count, PIA_HOST_PARENT_SLOTS);
+    CHECK_EQ(g_host.st[0].parent_dropped, 2);
     int commands = 0;
-    for (int i = 0; i < g_host.parent_count; ++i)
+    for (int i = 0; i < g_host.st[0].parent_count; ++i)
     {
-        const uint8_t *f = g_host.parent[(g_host.parent_head + i) % PIA_HOST_PARENT_SLOTS].data;
+        const uint8_t *f = g_host.st[0].parent[(g_host.st[0].parent_head + i) % PIA_HOST_PARENT_SLOTS].data;
         if (f[3] || f[4]) ++commands;
     }
     CHECK_EQ(commands, PIA_HOST_PARENT_SLOTS - 1);
 }
 
+/* ---- group: one host, three joiners ---------------------------------------------- */
+
+#define GROUP 3
+static const char *const kGroupIp[GROUP] = {"169.254.47.2", "169.254.47.3", "169.254.47.4"};
+static const uint8_t kGroupMac[GROUP][6] = {
+    {0x8a, 0xca, 0xba, 0x4f, 0x18, 0x8f}, {0x6a, 0x16, 0x0c, 0x22, 0x7c, 0xda}, {0xaa, 0x23, 0x81, 0xca, 0x25, 0xfa}};
+static pia_link_t g_links[GROUP];
+static pipe_t g_to_member[GROUP];
+static struct
+{
+    int parent_last, parent_delivered, child_expected, child_delivered, child_misrouted;
+    int wa, wa_own, wd, wd_own, lists, list_stations, list_left_max, status_entries;
+} g_m[GROUP];
+static int g_relayed[GROUP][GROUP];
+
+static int member_of_ip(const char *ip)
+{
+    for (int j = 0; j < GROUP; ++j) if (strcmp(ip, kGroupIp[j]) == 0) return j;
+    return -1;
+}
+
+/* What the host sends joiner j: WA and WD (whose and to whom), station lists, statuses. */
+static void inspect_group_datagram(const uint8_t *d, size_t n, int j)
+{
+    static uint8_t plain[PIA_MAX_BODY], app[PIA_MAX_INFLATE];
+    int len = pia_decrypt(&g_links[j].crypto, d, n, HOST_IP, plain, sizeof(plain));
+    CHECK(len >= 0);
+    if (len < 0) return;
+    int padding = d[5] >> 4, footer = d[12];
+    len -= padding + footer;
+    if (footer == 2) CHECK_EQ(bin_b16(plain + len), g_links[j].conn.our_id);
+    const uint8_t *body = plain;
+    int size = len;
+    if (d[5] & 1)
+    {
+        size = pia_decompress(plain, (size_t)len, app, sizeof(app));
+        CHECK(size >= 0);
+        if (size < 0) return;
+        body = app;
+    }
+    pia_message_iter_t it;
+    pia_message_t m;
+    pia_message_iter_init(&it, body, (size_t)size);
+    while (pia_message_next(&it, &m))
+    {
+        const uint8_t *q = m.payload;
+        if (m.protocol == 13 && m.length >= 21 && q[0] == 5)
+        {
+            ++g_m[j].lists;
+            g_m[j].list_stations = q[17];
+            if (q[18] > g_m[j].list_left_max) g_m[j].list_left_max = q[18];
+        }
+        else if (m.protocol == 1 && m.length >= 162 && q[1] == 0x11 && q[29] == 0)
+        {
+            int entries = 0;
+            for (int i = 0; i < 6; ++i)
+                if (q[30 + 22 * i + 1] != 0xff) { CHECK_EQ(q[30 + 22 * i + 1], i); ++entries; }
+            g_m[j].status_entries = entries;
+        }
+        else if (m.protocol == 10 && m.length >= 12 && (q[0] & 1) && q[8] == 'W')
+        {
+            const uint8_t *w = q + 8;
+            const bool own = memcmp(w + 4 + (w[1] == 'A' ? 2 : 0), g_links[j].connect_id, 2) == 0;
+            if (w[1] == 'A') { ++g_m[j].wa; g_m[j].wa_own += own; if (own) CHECK_EQ(w[8], j); }
+            else if (w[1] == 'D') { ++g_m[j].wd; g_m[j].wd_own += own; }
+        }
+    }
+}
+
+static void group_host_send(const uint8_t *d, size_t n, const char *dest, void *user)
+{
+    (void)user;
+    const int j = member_of_ip(dest);
+    CHECK(j >= 0);
+    if (j < 0) return;
+    inspect_group_datagram(d, n, j);
+    pipe_put_from(&g_to_member[j], d, n, -1);
+}
+
+/* Child frame from joiner j: its index in the value's top bits. */
+static void group_host_deliver(const uint8_t *payload, size_t n, int station, void *user)
+{
+    (void)user;
+    CHECK(n == 16 && station >= 0 && station < GROUP);
+    if (n != 16 || station < 0 || station >= GROUP) return;
+    const int j = bin_u16(payload + 4) >> 12;
+    if (j != station) { ++g_m[station].child_misrouted; return; }
+    CHECK_EQ(bin_u16(payload + 2), g_m[j].child_expected);
+    ++g_m[j].child_expected;
+    ++g_m[j].child_delivered;
+}
+
+static void group_joiner_send(const uint8_t *d, size_t n, const char *dest, void *user)
+{
+    const int j = (int)(intptr_t)user;
+    if (strcmp(dest, HOST_IP) == 0) { pipe_put_from(&g_to_host, d, n, j); return; }
+    const int k = member_of_ip(dest);
+    CHECK(k >= 0 && k != j);
+    if (k < 0 || k == j) return;
+    ++g_relayed[j][k];
+    pipe_put_from(&g_to_member[k], d, n, j);
+}
+
+static void group_joiner_deliver(const uint8_t *frame, size_t length, void *user)
+{
+    const int j = (int)(intptr_t)user;
+    CHECK(length >= 12 && frame[0] == 'W' && frame[1] == 'T');
+    const size_t n = frame[8] & 0x7f;
+    if (n != 73 || length < 12 + n) return;
+    const uint16_t counter = bin_u16(frame + 12 + 3);
+    if (counter == 0) return;
+    CHECK(counter > g_m[j].parent_last);
+    g_m[j].parent_last = counter;
+    ++g_m[j].parent_delivered;
+}
+
+static void group_step(void)
+{
+    ++g_tick;
+    g_now_us = (int64_t)g_tick * 16743;
+    datagram_t *d;
+    while ((d = pipe_take(&g_to_host)) != NULL) pia_host_receive(&g_host, d->data, d->len, kGroupIp[d->from]);
+    for (int j = 0; j < GROUP; ++j)
+        while ((d = pipe_take(&g_to_member[j])) != NULL)
+            pia_link_receive(&g_links[j], d->data, d->len, d->from < 0 ? HOST_IP : kGroupIp[d->from]);
+    pia_host_tick(&g_host, g_now_us / 1000);
+    for (int j = 0; j < GROUP; ++j) pia_link_tick(&g_links[j]);
+}
+
+static void group_loss(double loss, double reorder)
+{
+    g_to_host.loss = loss;
+    g_to_host.reorder = reorder;
+    for (int j = 0; j < GROUP; ++j) { g_to_member[j].loss = loss; g_to_member[j].reorder = reorder; }
+}
+
+static void group_child_frame(int j, uint16_t counter)
+{
+    uint8_t f[16] = {0x0e, 0x10};
+    bin_w16(f + 2, counter);
+    bin_w16(f + 4, (uint16_t)(j << 12 | (counter & 0xfff)));
+    pia_link_enqueue(&g_links[j], f, sizeof(f));
+}
+
+/* A child frame from joiner j as a Switch child sends it: the send header has the length
+   only at bit 8 + 5 x its slot. Uses the joiner's next stream sequence, so it goes last. */
+static void inject_switch_wt(int j, uint16_t counter)
+{
+    uint8_t wt[12 + 16] = {'W', 'T', 24, 0};
+    bin_w32(wt + 4, 0x6000 + counter);
+    bin_w32(wt + 8, 16u << (8 + 5 * g_links[j].client_slot));
+    wt[12] = 0x0e; wt[13] = 0x10;
+    bin_w16(wt + 14, counter);
+    bin_w16(wt + 16, (uint16_t)(j << 12 | (counter & 0xfff)));
+    uint8_t frame[8 + sizeof(wt)];
+    frame[0] = 7;
+    bin_wb16(frame + 1, sizeof(wt));
+    const uint16_t seq = g_links[j].reliable.next;
+    bin_wb16(frame + 3, seq);
+    bin_wb16(frame + 5, pia_reliable_send_low(&g_links[j].reliable));
+    frame[7] = 0;
+    memcpy(frame + 8, wt, sizeof(wt));
+    g_links[j].reliable.next = (uint16_t)(seq + 1);
+    pia_message_t m = {.protocol = 10, .payload = frame, .length = sizeof(frame), .has_flags = false};
+    uint8_t body[128], datagram[256];
+    int n = pia_message_encode(&m, body, sizeof(body));
+    bin_wb16(body + n, g_host.our_id);
+    n += 2;
+    int padding = (16 - (n & 15)) & 15;
+    memset(body + n, 0xff, padding);
+    n += padding;
+    int len = pia_encrypt(&g_links[j].crypto, body, (size_t)n, kGroupIp[j], g_host.our_id, g_links[j].conn.our_id,
+                          900 + j, 0x2468ace013579bdULL + (uint64_t)j, (uint8_t)(padding << 4), 2, datagram, sizeof(datagram));
+    CHECK(len > 0);
+    pia_host_receive(&g_host, datagram, (size_t)len, kGroupIp[j]);
+}
+
+static void run_group(uint32_t seed)
+{
+    printf("group of %d joiners, seed %u\n", GROUP, (unsigned)seed);
+    g_rng = seed;
+    memset(&g_to_host, 0, sizeof(g_to_host));
+    memset(g_to_member, 0, sizeof(g_to_member));
+    memset(g_m, 0, sizeof(g_m));
+    memset(g_relayed, 0, sizeof(g_relayed));
+    g_tick = 0;
+    pia_host_init(&g_host, kSsid, kHostMac, HOST_IP, group_host_send, group_host_deliver, host_log, NULL);
+    pia_host_set_app_data(&g_host, g_app_data, sizeof(g_app_data));
+    for (int j = 0; j < GROUP; ++j)
+    {
+        pia_link_init(&g_links[j], kSsid, kGroupMac[j], kHostMac, kGroupIp[j], HOST_IP, group_joiner_send,
+                      group_joiner_deliver, joiner_log, (void *)(intptr_t)j);
+        pia_link_set_connect(&g_links[j], false);
+        g_m[j].child_expected = 1;
+    }
+
+    /* Joiners arrive one after another; each list names everyone so far. */
+    for (int j = 0; j < GROUP; ++j)
+    {
+        CHECK_EQ(pia_host_station_joined(&g_host, kGroupMac[j], kGroupIp[j], (uint8_t)(j + 1)), j);
+        for (int i = 0; i < 40; ++i) group_step();
+    }
+    int t0 = g_tick;
+    bool all = false;
+    while (!all && g_tick - t0 < 600)
+    {
+        group_step();
+        all = true;
+        for (int j = 0; j < GROUP; ++j) all = all && pia_conn_connected(&g_links[j].conn) && pia_host_session_up(&g_host, j);
+    }
+    CHECK(all);
+    for (int i = 0; i < 200; ++i) group_step();
+    CHECK_EQ(g_host.list_seq, GROUP);
+    for (int j = 0; j < GROUP; ++j)
+    {
+        CHECK_EQ(g_host.st[j].update_acked, g_host.list_seq);
+        CHECK(g_host.st[j].status_acked);
+        CHECK_EQ(g_m[j].status_entries, GROUP + 1);
+        CHECK_EQ(g_m[j].list_stations, GROUP + 1);
+        CHECK_EQ(g_links[j].conn.peer_count, GROUP - 1);
+        for (int k = 0; k < g_links[j].conn.peer_count; ++k)
+        {
+            const int o = member_of_ip(g_links[j].conn.peers[k].ip);
+            CHECK(o >= 0 && o != j);
+            if (o >= 0) CHECK_EQ(g_links[j].conn.peers[k].id, g_links[o].conn.our_id);
+        }
+        for (int k = 0; k < GROUP; ++k) if (k != j) CHECK(g_relayed[j][k] > 0);
+    }
+
+    /* Connects one at a time, as the bridge passes them to the adapter; slots in order. */
+    for (int j = 0; j < GROUP; ++j) pia_link_set_connect(&g_links[j], true);
+    int accepted = 0;
+    t0 = g_tick;
+    while (accepted < GROUP && g_tick - t0 < 600)
+    {
+        const int w = pia_host_connect_pending(&g_host);
+        if (w >= 0)
+        {
+            CHECK_EQ(w, accepted);
+            pia_host_accept(&g_host, w, true, (uint8_t)accepted);
+            ++accepted;
+        }
+        group_step();
+    }
+    for (int i = 0; i < 60; ++i) group_step();
+    for (int j = 0; j < GROUP; ++j)
+    {
+        CHECK(g_links[j].accepted);
+        CHECK_EQ(g_links[j].client_slot, j);
+        CHECK_EQ(g_m[j].wa_own, 1);
+    }
+    CHECK(g_m[0].wa > 1);                   /* the first joiner also saw the later WAs */
+
+    /* The GBA's frames reach every child in order; each child's frames reach the GBA as
+       its own, under 3% loss and 1% reordering. */
+    group_loss(0.03, 0.01);
+    uint16_t parent_counter = 1, child_counter[GROUP] = {1, 1, 1};
+    for (int i = 0; i < 1500; ++i)
+    {
+        parent_command_frame(parent_counter++);
+        for (int j = 0; j < GROUP; ++j) if ((i + j) % 2 == 0) group_child_frame(j, child_counter[j]++);
+        group_step();
+        if (g_failures > 20) { printf("  too many failures, stopping\n"); return; }
+    }
+    group_loss(0, 0);
+    for (int i = 0; i < 120; ++i) { parent_command_frame(parent_counter++); group_step(); }
+    for (int i = 0; i < 30; ++i) group_step();
+    for (int j = 0; j < GROUP; ++j)
+    {
+        const pia_host_station_t *st = &g_host.st[j];
+        printf("  joiner %d: parent %d (+%d dropped) of %d, child %d of %d, host resends %d holds dropped %d\n", j,
+               g_m[j].parent_delivered, st->parent_dropped, parent_counter - 1, g_m[j].child_delivered,
+               child_counter[j] - 1, st->resends, st->hold_dropped);
+        CHECK_EQ(g_m[j].parent_delivered + st->parent_dropped, parent_counter - 1);
+        CHECK_EQ(g_m[j].child_delivered, child_counter[j] - 1);
+        CHECK_EQ(g_m[j].child_misrouted, 0);
+        CHECK_EQ(st->decrypt_failures, 0);
+        CHECK_EQ(g_links[j].overflow, 0);
+        CHECK_EQ(g_links[j].out_count, 0);
+    }
+
+    /* The GBA drops the second child: its WD reaches the group, only it leaves; the other
+       two get a list naming it as left and keep going. */
+    pia_host_disconnect_child(&g_host, 1);
+    t0 = g_tick;
+    while (!g_links[1].host_disconnected && g_tick - t0 < 60) group_step();
+    CHECK(g_links[1].host_disconnected);
+    CHECK(!g_links[0].host_disconnected && !g_links[2].host_disconnected);
+    CHECK(g_m[0].wd == 1 && g_m[0].wd_own == 0 && g_m[1].wd_own == 1);
+    t0 = g_tick;
+    while (g_host.st[1].state != 0 && g_tick - t0 < 1200) { parent_command_frame(parent_counter++); group_step(); }
+    CHECK_EQ(g_host.st[1].state, 0);
+    for (int i = 0; i < 200; ++i) { parent_command_frame(parent_counter++); group_step(); }
+    for (int j = 0; j < GROUP; j += 2)
+    {
+        CHECK_EQ(g_links[j].conn.peer_count, 1);
+        CHECK_EQ(g_m[j].list_stations, GROUP);
+        CHECK_EQ(g_m[j].list_left_max, 1);
+        CHECK_EQ(g_m[j].status_entries, GROUP);
+        CHECK_EQ(g_host.st[j].update_acked, g_host.list_seq);
+    }
+    CHECK_EQ(g_host.left_count, 0);           /* acknowledged by both: no longer listed */
+    const int before0 = g_m[0].parent_delivered, before2 = g_m[2].parent_delivered;
+    for (int i = 0; i < 300; ++i)
+    {
+        parent_command_frame(parent_counter++);
+        if (i % 2 == 0) { group_child_frame(0, child_counter[0]++); group_child_frame(2, child_counter[2]++); }
+        group_step();
+    }
+    for (int i = 0; i < 30; ++i) group_step();
+    CHECK(g_m[0].parent_delivered - before0 > 200 && g_m[2].parent_delivered - before2 > 200);
+    CHECK_EQ(g_m[0].child_delivered, child_counter[0] - 1);
+    CHECK_EQ(g_m[2].child_delivered, child_counter[2] - 1);
+    printf("  after the drop: list version %d, joiner 0 parent %d child %d, joiner 2 parent %d child %d\n",
+           g_host.list_seq, g_m[0].parent_delivered, g_m[0].child_delivered, g_m[2].parent_delivered,
+           g_m[2].child_delivered);
+
+    /* Switch-style child frames, slot 0 and slot 2, reach the GBA whole and in order. */
+    for (int j = 0; j < GROUP; j += 2)
+    {
+        const int before = g_m[j].child_delivered;
+        inject_switch_wt(j, child_counter[j]++);
+        CHECK_EQ(g_m[j].child_delivered, before + 1);
+        CHECK_EQ(g_m[j].child_misrouted, 0);
+    }
+
+    /* A Switch station does not resend a frame lost on the way: the frames after it wait
+       briefly, then reach the GBA without it, and the ack moves past it. */
+    {
+        const int j = 2;
+        const int before = g_m[j].child_delivered;
+        const uint16_t lost = g_links[j].reliable.next;
+        g_links[j].reliable.next = (uint16_t)(lost + 1);
+        for (int k = 0; k < 4; ++k) inject_switch_wt(j, child_counter[j]++);
+        CHECK_EQ(g_m[j].child_delivered, before);
+        for (int i = 0; i < 30; ++i) group_step();
+        CHECK_EQ(g_m[j].child_delivered, before + 4);
+        CHECK_EQ(g_m[j].child_misrouted, 0);
+        CHECK_EQ(g_host.st[j].gaps_given_up, 1);
+        CHECK(bin_less(lost, g_host.st[j].reliable.receive_next));
+        printf("  a frame never resent: given up, the %d after it went on\n", g_m[j].child_delivered - before);
+
+        /* More frames behind a gap than the hold takes: given up at once. */
+        const int before_full = g_m[j].child_delivered;
+        g_links[j].reliable.next = (uint16_t)(g_links[j].reliable.next + 1);
+        for (int k = 0; k < PIA_HOST_HOLD_SLOTS + 8; ++k) inject_switch_wt(j, child_counter[j]++);
+        CHECK_EQ(g_m[j].child_delivered, before_full + PIA_HOST_HOLD_SLOTS + 8);
+        CHECK_EQ(g_m[j].child_misrouted, 0);
+        CHECK_EQ(g_host.st[j].gaps_given_up, 2);
+        CHECK_EQ(g_host.st[j].hold_dropped, 0);
+    }
+}
+
 int main(void)
+
 {
     test_parent_queue();
     run_session(1);
     run_session(7);
     run_session(42);
     run_lossy_handshake(3);
+    run_group(5);
+    run_group(11);
     if (g_failures) { printf("%d FAILURES\n", g_failures); return 1; }
     printf("all checks passed\n");
     return 0;

@@ -266,5 +266,11 @@ Other additions: `LDN_INFO` reports `LDN_INFO frlg-ldn-bridge <version> chip=<ta
 transport=<name>` with no side effects, which text `LDN_HELLO` does not (it switches
 the console to binary mode); `LDN_RF` reports the signal strength of the room's
 advertisements since the last call; `LDN_ANTENNA 0|1` selects the onboard or external
-antenna on boards with a switch. In binary mode the bridge's own log lines arrive as
-type 3 messages.
+antenna on boards with a switch. Such a board compares the two after boot on the Wi-Fi
+traffic it hears, for about a second near other Wi-Fi and at most six seconds, and reports
+its pick once, as `LDN_ANTENNA auto <external|onboard>: <n> senders, external <dBm> dBm,
+onboard <dBm> dBm`; `LDN_ANTENNA 0|1` ends the comparison. A board built with a GPIO
+reading pin 1 of the GBA's link port (menuconfig, "LDN bridge") prints
+`LDN_GBA_VCC <millivolts> <off|gba|gb>` at boot and whenever pin 1 changes: `gba` is
+3.3 V, a GBA game running, and `gb` is 5 V, a Game Boy or Game Boy Color cartridge.
+In binary mode the bridge's own log lines arrive as type 3 messages.

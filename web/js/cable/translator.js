@@ -47,17 +47,22 @@ const OWNER_FLAG = 0x80;
 const CABLE_QUEUE = 96;
 const CHILD_QUEUE = 8;
 const HELD_BLOCKS = 8;
-const ANNOUNCE_PACKETS = 30;
+// The waits below were set for a cable packet every 26 ms (a GB-Link's cable mode before
+// firmware 3.0); a link with another pace gives its own (packetMs) and they keep their length.
+export const CABLE_PACKET_MS = 26;
+const ANNOUNCE_MS = 30 * CABLE_PACKET_MS;
 // After the LinkPlayer exchange the game still has to leave its link setup. A block that
 // arrives earlier is wiped by its ResetBlockReceivedFlags and the game stays one exchange behind.
-const SESSION_SETTLE_PACKETS = 150;
+const SESSION_SETTLE_MS = 150 * CABLE_PACKET_MS;
+const CARD_WAIT_MS = 15 * CABLE_PACKET_MS;
+const CARD_RETRY_MS = 10 * CABLE_PACKET_MS;
 const BARRIER_EMITS = 6;
 const INITIATE_TIMEOUT = 600;
 const IDLE_TIMEOUT = 90;
 const HOST_SILENT_FRAMES = 600;
-// The Switch reports held keys once per frame, the cable carries one per packet (about 40 a
-// second), so each packet stands for the Switch frames that passed meanwhile. Measured over
-// this many packets; the backlog is held under HOST_KEY_LAG frames.
+// The Switch reports held keys once per frame, the cable carries one per packet, so each
+// packet stands for the Switch frames that passed meanwhile. Measured over this many
+// packets; the backlog is held under HOST_KEY_LAG frames.
 const KEY_RATE_WINDOW = 40;
 const HOST_KEY_LAG = 12;
 
@@ -65,9 +70,9 @@ const AIR = { SEARCH: 0, CONNECTING: 1, NI: 2, UNI: 3 };
 // Union-room activities, from the link type the game opens its Cable Club link with.
 const ACTIVITY = { TRADE: 4, BATTLE_SINGLE: 1, BATTLE_DOUBLE: 2 };
 const LINKTYPE = { SINGLE_BATTLE: 0x2233, DOUBLE_BATTLE: 0x2244, BATTLE: 0x2211, TRADE_SETUP: 0x1133 };
-// holdJoin: the cable packets the other GBA's LinkPlayer has before the Switch's goes first.
+// holdJoin: how long the other GBA's LinkPlayer has before the Switch's goes first.
 // Another page sends its own only once it has this one; a GBA sends at once.
-const LP_EARLY_PACKETS = 20;
+const LP_EARLY_MS = 20 * CABLE_PACKET_MS;
 const LP_ID_OFFSET = 16 + 0x18;
 const LINK_PLAYER_SIZE = 28;         // struct LinkPlayer, as the Switch sends it at a battle's start
 // Colosseum: in the room, the game closing its link for the battle, in the battle, and the
@@ -353,9 +358,10 @@ export class CableTranslator {
     // holdJoin (over Celio): the Switch's group is found at once but joined only once the
     // cable opens (cableReset), as "CELIO", in whichever room the Switch opened; the other
     // player is known only after that.
-    constructor({ send, connect, disconnect, log = () => {}, holdJoin = false }) {
+    constructor({ send, connect, disconnect, log = () => {}, holdJoin = false, packetMs = CABLE_PACKET_MS }) {
         this.sendFrame = send;
         this.holdJoin = holdJoin;
+        this.packetMs = packetMs;    // the cable's pace: one nextCommand() per packet
         this.joinAllowed = !holdJoin;
         this.groupSeen = false;      // the Switch's group is open (holdJoin: this side is ready)
         this.roomsSeen = new Set();  // the rooms the board offers the Switch's room as
@@ -548,10 +554,10 @@ export class CableTranslator {
         if (this.battle && !early) block[LP_ID_OFFSET] = this.rubyLP[LP_ID_OFFSET] ^ 1;
         this.cablePushBlock(block, block.length);
         this.p0LPDelivered = true;
-        this.readyAt = this.cablePackets + SESSION_SETTLE_PACKETS;
+        this.readyAt = this.cablePackets + this.packets(SESSION_SETTLE_MS);
         if (!this.cardRequested && !this.roomClosed && this.closeCount === 0 && !this.cancelReturn) {
             this.cardArmed = true;
-            this.cardAt = this.cablePackets + 15;
+            this.cardAt = this.cablePackets + this.packets(CARD_WAIT_MS);
         }
         if (this.battleState === BATTLE.RETURNING) {
             // Back in the Colosseum after a battle: keys without a standby from the game; the
@@ -615,7 +621,7 @@ export class CableTranslator {
     requestEarlyCard() {
         if (this.expect !== EXPECT.NONE) {
             this.cardArmed = true;
-            this.cardAt = this.cablePackets + 10;
+            this.cardAt = this.cablePackets + this.packets(CARD_RETRY_MS);
             return;
         }
         this.cardRequested = true;
@@ -1462,6 +1468,9 @@ export class CableTranslator {
         }
     }
 
+    // How many of the cable's packets a wait of ms takes.
+    packets(ms) { return Math.round(ms / this.packetMs); }
+
     // The next command for the game, or null for none this packet.
     nextCommand() {
         this.cablePackets++;
@@ -1471,7 +1480,7 @@ export class CableTranslator {
             this.cardArmed = false;
             this.requestEarlyCard();
         }
-        if (!this.announced && this.cablePackets > ANNOUNCE_PACKETS) {
+        if (!this.announced && this.cablePackets > this.packets(ANNOUNCE_MS)) {
             // The master asks for the player data exchange.
             this.announced = true;
             this.expect = EXPECT.LINK_PLAYER;
@@ -1479,7 +1488,7 @@ export class CableTranslator {
             return [LINKCMD.SEND_LINK_TYPE, 0x1133, 0, 0, 0, 0, 0, 0];
         }
         if (this.holdJoin && this.expect === EXPECT.LINK_PLAYER && this.haveHostLP && !this.sessionRubyLP && !this.p0LPDelivered
-            && ++this.lpEarlyWait > LP_EARLY_PACKETS) this.deliverLinkPlayerToGame(true);
+            && ++this.lpEarlyWait > this.packets(LP_EARLY_MS)) this.deliverLinkPlayerToGame(true);
         if (this.cq.length) return this.cq.shift();
         if (this.keysActive) return [LINKCMD.SEND_HELD_KEYS, this.hostKey(), 0, 0, 0, 0, 0, 0];
         return null;

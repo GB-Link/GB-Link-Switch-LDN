@@ -1,13 +1,14 @@
 # Web client
 
 The page at <https://switch.gblink.io>. It installs the firmware on both boards, stores
-the Switch keys on the ESP32, and then either carries the link between the boards, trades
-with the Switch by itself, or sends it Mystery Gifts. It is a plain static site with no
-build step and no server.
+the Switch keys on the ESP32, and then either carries the link between the boards, plays
+a game in its own emulator, trades with the Switch by itself, or sends it Mystery Gifts.
+It is a plain static site with no build step and no server.
 
 ## Modes
 
-Pick one at the top of the page, or open `#gba`, `#switch`, `#celio` or `#gift` directly.
+Pick one at the top of the page, or open `#gba`, `#emu`, `#switch`, `#celio` or `#gift`
+directly.
 
 **GBA to Switch** (ESP32 board + GB-Link adapter)
 
@@ -19,6 +20,18 @@ Pick one at the top of the page, or open `#gba`, `#switch`, `#celio` or `#gift` 
    wireless, so both boards must be on USB. For Emerald and Ruby/Sapphire the page's
    National Dex bypass, when turned on, lets trades go ahead whatever either game's
    progress.
+
+**Play in your browser** (ESP32 board only)
+
+1. **ESP32 board:** the same as above.
+2. **Game:** drop the ROM of Ruby, Sapphire, Emerald, FireRed or LeafGreen, with its
+   `.sav` if you have one. Only clean dumps of the cartridges are taken, in any language
+   and revision. The game and its save are kept in the browser; *Save file* downloads the
+   save.
+3. **Link with the Switch:** press *Start*. FireRed, LeafGreen and Emerald play with a
+   Wireless Adapter plugged in, which the page carries to the board as it would a
+   GB-Link's. Ruby and Sapphire play on a link cable whose other end is the page, which
+   translates the link into the Switch's wireless as for a real GBA.
 
 **PC to Switch** (ESP32 board only)
 
@@ -94,19 +107,8 @@ firmware/tools/package_web.py
 | `js/keys.js` | reading `prod.keys` |
 | `js/trade/` | trading without a GBA |
 | `js/cable/` | Ruby and Sapphire: the adapter's cable mode and the translation to the Switch's wireless (`translator.js` is MPL-2.0, ported from [mgba_LDN](https://github.com/Gr3nSkyDragon/mgba_LDN)) |
+| `js/emu/` | The page's emulator: the game and its screen, sound and keys, the games kept in the browser, its wireless adapter (`wireless.js`) and its link cable (`cable.js`); the emulator itself is built into `emulator/` from [`../emulator`](../emulator/README.md) |
 | `js/gift/` | Mystery Gift: the group the Switch joins as a friend, the gift exchange (from [gblink-wondercards](https://github.com/GB-Link/gblink-wondercards)) and the cards; `team.js` and `rom-checks.js` are written by `cards/build.mjs`, `verify.js` makes sure a European game is the one a card was made for, `wc3.js` reads `.wc3` files |
-
-## Tests
-
-These run without any hardware:
-
-```
-node web/tests/run.mjs            # framing and the board connection
-node web/tests/trade.mjs          # trade code against the C# host
-node web/tests/session-test.mjs   # whole trades against a stand-in Switch
-node web/tests/cable-test.mjs     # Ruby's cable link translated, against stand-ins for both games
-node web/tests/gift-test.mjs      # the cards, and whole deliveries to a stand-in Switch's Mystery Gift
-```
 
 ## Third-party code
 
@@ -114,3 +116,4 @@ node web/tests/gift-test.mjs      # the cards, and whole deliveries to a stand-i
   Apache-2.0
 - `vendor/picoflash`: [picoflash](https://github.com/picoflash/picoflash), MIT,
   © Piers Finlayson
+- `emulator`: [mGBA](https://mgba.io) 0.10.5, MPL-2.0 (`emulator/LICENSE-mGBA.txt`)

@@ -331,3 +331,67 @@ footer p { color: var(--muted); font-size: 0.82rem; }
 .gift-pick label { color: var(--muted); font-size: 0.9rem; }
 #gift-event { flex: 1 1 18em; min-width: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); color: inherit; font: inherit; }
 #gift-description { margin-top: 12px; }
+
+/* The emulator: the game's screen, touch controls where the screen is touched, its buttons. */
+.emu-game { display: grid; gap: 12px; margin-top: 16px; }
+.emu-screen canvas {
+    display: block; width: 100%; height: auto; aspect-ratio: 3 / 2;
+    image-rendering: pixelated; background: #000; border-radius: 10px;
+}
+.emu-toolbar { margin-top: 0; }
+.emu-keys { margin-top: 0; }
+.emu-unsaved { display: inline-block; width: 8px; height: 8px; margin-left: 4px; border-radius: 50%; background: var(--warn); vertical-align: middle; }
+.emu-touch { display: none; gap: 12px; user-select: none; -webkit-user-select: none; touch-action: none; }
+.emu-key {
+    display: grid; place-items: center;
+    font-weight: 600; font-size: 1.1rem; color: var(--text);
+    background: var(--panel-2); border: 1px solid var(--line); border-radius: 9px;
+}
+.emu-key.pressed { background: var(--accent); color: var(--accent-ink); }
+.emu-shoulders, .emu-menu { display: flex; justify-content: space-between; gap: 16px; }
+.emu-shoulders .emu-key { width: 30%; height: 40px; }
+.emu-menu { justify-content: center; }
+.emu-pill { width: 104px; height: 32px; font-size: 0.85rem; border-radius: 16px; }
+.emu-pad { display: flex; justify-content: space-between; align-items: center; }
+.emu-dpad { display: grid; grid-template-columns: repeat(3, clamp(42px, 13vw, 58px)); grid-template-rows: repeat(3, clamp(42px, 13vw, 58px)); }
+.emu-up { grid-area: 1 / 2; }
+.emu-left { grid-area: 2 / 1; }
+.emu-right { grid-area: 2 / 3; }
+.emu-down { grid-area: 3 / 2; }
+.emu-ab { display: flex; gap: 12px; align-items: center; }
+.emu-ab .emu-key:last-child { margin-bottom: 40px; }
+.emu-round { width: clamp(52px, 16vw, 70px); height: clamp(52px, 16vw, 70px); border-radius: 50%; }
+@media (pointer: coarse) {
+    .emu-touch { display: grid; }
+    .emu-keys { display: none; }
+}
+
+/* Full screen: the picture as large as it fits, the buttons below. */
+.emu-game.full {
+    position: fixed; inset: 0; z-index: 100;
+    margin: 0; padding: 8px;
+    background: #000;
+    align-content: center; justify-items: center;
+}
+.emu-game.full .emu-screen { width: min(100%, calc((100dvh - 80px) * 1.5)); }
+.emu-game.full .emu-keys { display: none; }
+.emu-game.full .emu-toolbar > :not(.emu-keep) { display: none; }
+@media (pointer: coarse) {
+    .emu-game.full .emu-screen { width: min(100%, calc((100dvh - 330px) * 1.5)); }
+    .emu-game.full .emu-touch { width: 100%; max-width: 512px; }
+}
+/* Held sideways: the picture as tall as it fits, the buttons either side of it as on a GBA. */
+@media (pointer: coarse) and (orientation: landscape) {
+    .emu-game.full .emu-screen { width: min(calc(100vw - 336px), calc((100dvh - 64px) * 1.5)); }
+    .emu-game.full .emu-touch { position: fixed; inset: 12px; width: auto; max-width: none; display: block; pointer-events: none; }
+    .emu-game.full .emu-touch .emu-key { pointer-events: auto; }
+    .emu-game.full .emu-shoulders, .emu-game.full .emu-pad, .emu-game.full .emu-menu { position: absolute; left: 0; right: 0; justify-content: space-between; align-items: center; }
+    .emu-game.full .emu-shoulders { top: 0; }
+    .emu-game.full .emu-pad { top: 50%; transform: translateY(-50%); }
+    .emu-game.full .emu-menu { bottom: 0; }
+    .emu-game.full .emu-shoulders .emu-key { width: 128px; }
+    .emu-game.full .emu-dpad { grid-template-columns: repeat(3, 45px); grid-template-rows: repeat(3, 45px); }
+    .emu-game.full .emu-round { width: 58px; height: 58px; }
+    .emu-game.full .emu-ab .emu-key:last-child { margin-bottom: 24px; }
+}
+#emu-kept .actions { margin-top: 0; flex-wrap: nowrap; }

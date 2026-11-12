@@ -10,7 +10,7 @@
 // where the parent has opened a new link. This side sends its own as the Switch gets there
 // and answers the Switch once the parent's has come.
 
-import { CMD_WORDS, KeyRuns, KeyQueue, LINKCMD, sizeFromCount, sizeFromRequest } from './translator.js';
+import { CABLE_PACKET_MS, CMD_WORDS, KeyRuns, KeyQueue, LINKCMD, sizeFromCount, sizeFromRequest } from './translator.js';
 import { leaderBeacon } from './leader.js';
 import { StepFollower } from './steps.js';
 
@@ -42,8 +42,8 @@ const PROGRESS_CLEARED = 0x11;
 // refuses a FireRed/LeafGreen partner unless both are set.
 const PROGRESS_LINK_HOENN = 0x10;
 // A GBA parent sends its LinkPlayer with its 0x2222; a parent that waits for ours first
-// (this page as the parent, for another Switch) gets it after this many cable packets.
-const LP_WAIT_PACKETS = 20;
+// (this page as the parent, for another Switch) gets it after this long.
+const LP_WAIT_MS = 20 * CABLE_PACKET_MS;
 // The Switch refuses a block request while its own block is still going out. Like the
 // FireRed leader, the next request waits this many frames after the Switch's last block,
 // and is asked again (in the page's own frame, never as an extra one) if the Switch has
@@ -71,10 +71,11 @@ const hex = (v) => (v & 0xffff).toString(16).padStart(4, '0');
 export class ReverseTranslator {
     // leader: an RfuLeader on the board's host port. activity: the group to lead (4 trade,
     // 1 single battle, 2 double battle), which the other player must choose too.
-    constructor({ leader, activity = 4, log = () => {} }) {
+    constructor({ leader, activity = 4, log = () => {}, packetMs = CABLE_PACKET_MS }) {
         this.leader = leader;
         this.activity = activity;
         this.log = log;
+        this.packetMs = packetMs;    // the cable's pace: one nextCommand() per packet
         this.bypassNationally = false;
 
         this.switchLP = null;        // 60 bytes, from the Switch's player exchange
@@ -666,7 +667,7 @@ export class ReverseTranslator {
 
     // The next command for the parent, or null for none this packet.
     nextCommand() {
-        if (this.lpPending && ++this.lpWait >= LP_WAIT_PACKETS) this.sendOwnLP();
+        if (this.lpPending && ++this.lpWait >= Math.round(LP_WAIT_MS / this.packetMs)) this.sendOwnLP();
         if (this.cq.length) return this.cq.shift();
         if (!this.keysToParent) return null;
         if (++this.keyPops >= KEY_RATE_WINDOW) {
