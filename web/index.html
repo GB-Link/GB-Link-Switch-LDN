@@ -24,32 +24,19 @@
         <p id="unsupported" class="notice notice-error" hidden></p>
 
         <nav class="paths" id="paths" role="tablist" aria-label="What links with the Switch">
-            <button class="path" type="button" role="tab" id="path-gba" data-path="gba" aria-selected="true">
-                <strong>Game Boy Advance</strong>
-                <span>Your Game Boy Advance trades and battles with the Switch. Ruby, Sapphire, Emerald, FireRed, LeafGreen.</span>
-                <span class="needs">ESP32 + GB-Link</span>
-            </button>
-            <button class="path" type="button" role="tab" id="path-emu" data-path="emu" aria-selected="false">
-                <strong>Play in this browser</strong>
-                <span>A game played in this page trades and battles with the Switch. Ruby, Sapphire, Emerald, FireRed, LeafGreen.</span>
-                <span class="needs">ESP32</span>
-            </button>
-            <button class="path" type="button" role="tab" id="path-switch" data-path="switch" aria-selected="false">
-                <strong>Trade from this page</strong>
-                <span>The Switch trades with this page: Wonder Trade, or your own .pk3 files.</span>
-                <span class="needs">ESP32</span>
-            </button>
-            <button class="path" type="button" role="tab" id="path-celio" data-path="celio" aria-selected="false">
-                <strong>Online with Celio</strong>
-                <span>The Switch trades and battles over the internet with another player: a Game Boy Advance or an emulator at celio.gblink.io, or another Switch.</span>
-                <span class="needs">ESP32</span>
-            </button>
-            <button class="path" type="button" role="tab" id="path-gift" data-path="gift" aria-selected="false">
-                <strong>Mystery Gift</strong>
-                <span>Wonder Cards for the Switch from this page: event distributions and the GB-Link Team's cards.</span>
-                <span class="needs">ESP32</span>
-            </button>
+            <button class="path" type="button" role="tab" id="path-gba" data-path="gba" aria-selected="true">Game Boy Advance</button>
+            <button class="path" type="button" role="tab" id="path-emu" data-path="emu" aria-selected="false">Play in this browser</button>
+            <button class="path" type="button" role="tab" id="path-switch" data-path="switch" aria-selected="false">Trade from this page</button>
+            <button class="path" type="button" role="tab" id="path-celio" data-path="celio" aria-selected="false">Online with Celio</button>
+            <button class="path" type="button" role="tab" id="path-gift" data-path="gift" aria-selected="false">Mystery Gift</button>
         </nav>
+        <div class="path-about" id="path-about">
+            <p data-about="gba">Your Game Boy Advance trades and battles with the Switch. Ruby, Sapphire, Emerald, FireRed, LeafGreen. <span class="needs">Needs an ESP32 board and a GB-Link adapter.</span></p>
+            <p data-about="emu" hidden>A game played in this page trades and battles with the Switch. Ruby, Sapphire, Emerald, FireRed, LeafGreen. <span class="needs">Needs an ESP32 board.</span></p>
+            <p data-about="switch" hidden>The Switch trades with this page: Wonder Trade, or your own .pk3 files. <span class="needs">Needs an ESP32 board.</span></p>
+            <p data-about="celio" hidden>The Switch trades and battles over the internet with another player: a Game Boy Advance or an emulator at celio.gblink.io, or another Switch. <span class="needs">Needs an ESP32 board.</span></p>
+            <p data-about="gift" hidden>Wonder Cards for the Switch from this page: event distributions and the GB-Link Team's cards. <span class="needs">Needs an ESP32 board.</span></p>
+        </div>
 
         <section class="card" id="esp-card" aria-labelledby="esp-title">
             <div class="card-head">
@@ -58,13 +45,13 @@
                     <h2 id="esp-title">ESP32 board</h2>
                     <p class="sub">Joins the Switch's wireless. ESP32-S3, C6, C5, C3 or the original ESP32.</p>
                 </div>
-                <span class="dot" id="esp-dot"></span>
+                <span class="dot" aria-hidden="true" id="esp-dot"></span>
             </div>
             <p class="status" id="esp-status" aria-live="polite"></p>
             <p class="hint" id="esp-hint"></p>
             <div class="progress" id="esp-progress" hidden><div class="bar"></div></div>
             <div class="actions" id="esp-actions">
-                <button class="primary" id="esp-primary"></button>
+                <button class="primary" id="esp-primary" hidden></button>
                 <button class="quiet" id="esp-secondary" hidden></button>
             </div>
 
@@ -107,7 +94,7 @@
                     <h2 id="adapter-title">GB-Link adapter</h2>
                     <p class="sub">Plugs into the Game Boy Advance in place of a Wireless Adapter, with a Game Boy Color link cable. A Game Boy Advance cable does not work here.</p>
                 </div>
-                <span class="dot" id="adapter-dot"></span>
+                <span class="dot" aria-hidden="true" id="adapter-dot"></span>
             </div>
             <p class="status" id="adapter-status" aria-live="polite"></p>
             <p class="hint" id="adapter-hint"></p>
@@ -120,7 +107,7 @@
                 <li data-step="reconnect">Reconnect</li>
             </ol>
             <div class="actions" id="adapter-actions">
-                <button class="primary" id="adapter-primary"></button>
+                <button class="primary" id="adapter-primary" hidden></button>
                 <button class="quiet" id="adapter-secondary" hidden></button>
             </div>
 
@@ -152,7 +139,7 @@
                     <h2 id="play-title">Play</h2>
                     <p class="sub" id="play-sub">Let this page carry the link, or connect the two boards with three wires.</p>
                 </div>
-                <span class="dot" id="play-dot"></span>
+                <span class="dot" aria-hidden="true" id="play-dot"></span>
             </div>
 
             <div class="switcher" id="play-game" role="group" aria-label="The game on the Game Boy Advance">
@@ -219,14 +206,14 @@
             </details>
         </section>
 
-        <section class="card" id="emu-card" data-path="emu" aria-labelledby="emu-title">
+        <section class="card" id="emu-card" hidden data-path="emu" aria-labelledby="emu-title">
             <div class="card-head">
                 <span class="step">2</span>
                 <div>
                     <h2 id="emu-title">Game</h2>
                     <p class="sub" id="emu-sub">Pokémon Ruby, Sapphire, Emerald, FireRed or LeafGreen, dumped from your own cartridge, in any language.</p>
                 </div>
-                <span class="dot" id="emu-dot"></span>
+                <span class="dot" aria-hidden="true" id="emu-dot"></span>
             </div>
 
             <div id="emu-pick">
@@ -281,14 +268,14 @@
             <p class="fine">The game and its save stay in this browser. Nothing is uploaded. <strong>Save file</strong> downloads the save, to keep it safe or to play it elsewhere.</p>
         </section>
 
-        <section class="card" id="emu-link-card" data-path="emu" aria-labelledby="emu-link-title">
+        <section class="card" id="emu-link-card" hidden data-path="emu" aria-labelledby="emu-link-title">
             <div class="card-head">
                 <span class="step">3</span>
                 <div>
                     <h2 id="emu-link-title">Link with the Switch</h2>
                     <p class="sub" id="emu-link-sub">This page carries the game's link to the board. Keep the tab open while you play.</p>
                 </div>
-                <span class="dot" id="emu-link-dot"></span>
+                <span class="dot" aria-hidden="true" id="emu-link-dot"></span>
             </div>
 
             <div class="session" id="emu-session" hidden>
@@ -321,14 +308,14 @@
             </details>
         </section>
 
-        <section class="card" id="trade-card" data-path="switch" aria-labelledby="trade-title">
+        <section class="card" id="trade-card" hidden data-path="switch" aria-labelledby="trade-title">
             <div class="card-head">
                 <span class="step">2</span>
                 <div>
                     <h2 id="trade-title">Trade</h2>
                     <p class="sub">Trade with the Switch from this page. The board from step 1 is all it takes.</p>
                 </div>
-                <span class="dot" id="trade-dot"></span>
+                <span class="dot" aria-hidden="true" id="trade-dot"></span>
             </div>
 
             <div class="switcher" id="trade-source" role="group" aria-label="What to trade with">
@@ -393,14 +380,14 @@
             </details>
         </section>
 
-        <section class="card" id="celio-card" data-path="celio" aria-labelledby="celio-title">
+        <section class="card" id="celio-card" hidden data-path="celio" aria-labelledby="celio-title">
             <div class="card-head">
                 <span class="step">2</span>
                 <div>
                     <h2 id="celio-title">Online with Celio</h2>
                     <p class="sub">Game Boy Advance and emulator players connect at <a href="https://celio.gblink.io/" target="_blank" rel="noopener">celio.gblink.io</a>; another Switch player uses this page.</p>
                 </div>
-                <span class="dot" id="celio-dot"></span>
+                <span class="dot" aria-hidden="true" id="celio-dot"></span>
             </div>
 
             <div id="celio-start">
@@ -450,14 +437,14 @@
             </details>
         </section>
 
-        <section class="card" id="gift-card" data-path="gift" aria-labelledby="gift-title">
+        <section class="card" id="gift-card" hidden data-path="gift" aria-labelledby="gift-title">
             <div class="card-head">
                 <span class="step">2</span>
                 <div>
                     <h2 id="gift-title">Mystery Gift</h2>
                     <p class="sub">Send Wonder Cards to the Switch from this page. The board from step 1 is all it takes.</p>
                 </div>
-                <span class="dot" id="gift-dot"></span>
+                <span class="dot" aria-hidden="true" id="gift-dot"></span>
             </div>
 
             <p class="gift-pick"><label for="gift-event">Wonder Card</label> <select id="gift-event"></select></p>

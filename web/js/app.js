@@ -1993,10 +1993,21 @@ function renderPaths() {
     for (const tab of $('paths').children) {
         const chosen = tab.dataset.path === state.path;
         tab.setAttribute('aria-selected', String(chosen));
+        tab.tabIndex = chosen ? 0 : -1;
         tab.disabled = !chosen && pathBusy();
         tab.title = tab.disabled ? (state.trade ? 'Disconnect from the Switch first.' : state.gift ? 'Stop the Mystery Gift first.' : 'Stop carrying the link first.') : '';
     }
+    for (const about of $('path-about').children) about.hidden = about.dataset.about !== state.path;
     for (const card of document.querySelectorAll('main > [data-path]')) card.hidden = card.dataset.path !== state.path;
+}
+
+// Left and right move along the tabs, as in any tab list.
+function onPathKey(event) {
+    const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[event.key];
+    if (!step || pathBusy()) return;
+    event.preventDefault();
+    choosePath(PATHS[(PATHS.indexOf(state.path) + step + PATHS.length) % PATHS.length]);
+    $(`path-${state.path}`).focus();
 }
 
 // ---------------------------------------------------------------- trading from here
@@ -2101,7 +2112,9 @@ function renderTrade() {
     $('source-note-pool').hidden = !pool;
     $('source-note-party').hidden = pool;
 
-    drawSlots('their-slots', state.opponent?.party ?? [null, null, null, null, null, null]);
+    // Until the Switch's team is known, one line stands in for it.
+    if (state.opponent) drawSlots('their-slots', state.opponent.party);
+    else drawSlots('their-slots', [null], { empty: 'Shown at the trade table' });
     $('their-name').textContent = state.opponent?.name ?? 'The Switch';
     $('our-name').textContent = pool ? 'The pool' : 'Yours';
     if (pool) {
@@ -2530,6 +2543,7 @@ function wireUp() {
     });
 
     $('paths').addEventListener('click', (event) => choosePath(event.target.closest('[data-path]')?.dataset.path));
+    $('paths').addEventListener('keydown', onPathKey);
     window.addEventListener('hashchange', () => choosePath(location.hash.slice(1), { keep: false }));
     $('trade-source').addEventListener('click', (event) => chooseSource(event.target.closest('[data-source]')?.dataset.source));
     $('pool-accept').addEventListener('click', () => { if (pooling() && state.poolMon) state.trade?.offerSlot(0); });
@@ -2676,6 +2690,7 @@ async function start() {
     // URL hash overrides the remembered tree.
     const asked = location.hash.slice(1);
     state.path = PATHS.includes(asked) ? asked : PATHS.includes(remembered(PATH_STORE)) ? remembered(PATH_STORE) : 'gba';
+    renderPaths();
     state.source = remembered(SOURCE_STORE) === 'party' ? 'party' : 'pool';
     state.game = remembered(GAME_STORE) === 'cable' ? 'cable' : 'wireless';
     state.celioServer = remembered(CELIO_STORE) ?? CELIO_SERVER;

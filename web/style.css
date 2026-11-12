@@ -41,22 +41,28 @@ h3 { margin: 0 0 6px; font-size: 1rem; }
 code { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 0.92em; }
 a { color: var(--accent); }
 
-/* The page's two trees: what is linked with the Switch decides which cards follow. */
-.paths { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr)); gap: 12px; margin-top: 22px; }
+/* What links with the Switch: one tab each, and the chosen one decides which cards follow. */
+.paths {
+    display: flex; flex-wrap: wrap; gap: 4px;
+    margin-top: 22px; padding: 4px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 13px;
+}
 .path {
-    display: grid; gap: 3px; align-content: start; text-align: left;
-    padding: 14px 16px; border-radius: 14px;
-    background: var(--panel); font-weight: 400; color: var(--muted);
+    flex: 1 1 auto;
+    padding: 9px 6px; border: 0; border-radius: 9px;
+    background: none; color: var(--muted); font-size: 0.88rem; white-space: nowrap;
 }
-.path strong { color: var(--text); font-size: 1rem; }
-.path span { font-size: 0.88rem; }
-.path .needs {
-    justify-self: start; margin-top: 5px; padding: 1px 9px;
-    border: 1px solid var(--line); border-radius: 99px;
-    font-size: 0.78rem; font-weight: 600; color: var(--text);
+.path:hover:not(:disabled) { color: var(--text); background: var(--panel-2); }
+.path[aria-selected="true"], .path[aria-selected="true"]:hover { background: var(--accent); color: var(--accent-ink); }
+/* Too narrow for one row: three tabs over two, so no tab is left alone on a row. */
+@media (max-width: 760px) {
+    .paths { display: grid; grid-template-columns: repeat(6, 1fr); }
+    .path { grid-column: span 2; white-space: normal; line-height: 1.25; }
+    .path:nth-child(n+4) { grid-column: span 3; }
 }
-.path[aria-selected="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
-.path[aria-selected="true"] strong { color: var(--accent); }
+.path-about { margin: 12px 4px 0; }
+.path-about p { margin: 0; color: var(--muted); font-size: 0.93rem; }
+.needs { color: var(--text); }
 
 .card {
     background: var(--panel);
@@ -120,6 +126,7 @@ button {
     cursor: pointer;
 }
 button:hover:not(:disabled) { border-color: var(--accent); }
+:is(button, a, select, input[type=text], input[type=checkbox], #log):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 button:disabled { opacity: 0.45; cursor: not-allowed; }
 button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 button.primary:hover:not(:disabled) { filter: brightness(1.08); }
@@ -210,6 +217,8 @@ ol.fine li { margin: 4px 0; }
 /* A card whose step is done: one line, nothing to press. */
 .card.done { padding-top: 16px; padding-bottom: 14px; }
 .card.done .sub { display: none; }
+.card.done .step { background: var(--good); border-color: var(--good); color: var(--accent-ink); font-size: 0; }
+.card.done .step::after { content: "✓"; font-size: 0.95rem; }
 .card.done .status { margin-top: 8px; }
 .card.done .more { margin-top: 8px; display: inline-block; margin-right: 18px; vertical-align: top; }
 .card.done .more[open] { display: block; }
