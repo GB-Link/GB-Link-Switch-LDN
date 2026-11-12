@@ -304,7 +304,7 @@ static void check_frames(void)
     /* Host port: the client's adapter. This chip's adapter is neither fed nor heard. */
     check(pico_link_set_port(PICO_PORT_HOST), "the host port opens");
     check(!pico_link_await_mode() && !pico_link_gba_active(), "adapter state starts over on the host port");
-    check(pico_link_gba_search_age_ms() == -1, "the client's adapter does not report searches");
+    check(pico_link_gba_search_age_ms() == -1, "no search reports before the client's adapter sends one");
     g_wa.fed_length = 0;
     check(pico_link_send(PICO_LINK_CHANNEL_DATA, chunk, sizeof(chunk)), "a chunk is sent to the client");
     check(g_wa.fed_length == 0, "this chip's adapter is not fed on the host port");
@@ -320,9 +320,17 @@ static void check_frames(void)
     check(pico_link_await_mode() && pico_link_gba_active(), "the client's adapter reports are read");
     check(next_inbound(frame, &length) && memcmp(frame, await_mode, sizeof(await_mode)) == 0,
           "the client's frames reach the bridge");
+    /* A client that reports its GBA's searches (the web client's emulator). */
+    static const uint8_t not_searched[] = {SYNC0, SYNC1, PICO_LINK_CHANNEL_DATA, 3, 0, 0x1C, 0xFF, 0xFF};
+    pico_link_feed_host(not_searched, sizeof(not_searched));
+    check(pico_link_gba_search_age_ms() == INT64_MAX, "the client's report before its GBA has searched");
+    static const uint8_t searched[] = {SYNC0, SYNC1, PICO_LINK_CHANNEL_DATA, 3, 0, 0x1C, 200, 0};
+    pico_link_feed_host(searched, sizeof(searched));
+    check(pico_link_gba_search_age_ms() == 200, "the client's report of a search");
 
     /* Back on the pins. */
     check(pico_link_set_port(PICO_PORT_UART), "back to this chip's adapter");
+    check(pico_link_gba_search_age_ms() == 1234, "searches are this chip's adapter's again");
     g_wa.transport.data(chunk, sizeof(chunk), g_wa.transport.ctx);
     check(next_inbound(frame, &length) && length == HEADER_LENGTH + 64, "this chip's adapter is heard again");
     check(g_mutex == 0, "the adapter lock is balanced");

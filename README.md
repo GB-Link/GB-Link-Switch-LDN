@@ -1,12 +1,15 @@
 # GB-Link Switch LDN
 
 Trade and battle with Pokémon FireRed and LeafGreen on the Nintendo Switch, from a real
-Game Boy Advance or from your PC.
+Game Boy Advance, from a game played in your browser, or from your PC.
 
 - **GBA to Switch.** A GBA running FireRed, LeafGreen or Emerald joins the Switch's
   Trade Center or Colosseum over the Switch's own local wireless, as if it were another
   Switch. Trades and battles. Ruby and Sapphire, which have no wireless, trade and battle
   too: the web page links them by cable and turns that link into the Switch's wireless.
+- **Play in your browser.** The web page has a Game Boy Advance emulator of its own. Ruby,
+  Sapphire, Emerald, FireRed or LeafGreen played in it trades and battles with the Switch
+  just like a real GBA, and you need only the ESP32 board.
 - **Online with Celio.** Trade and battle over the internet with anyone on
   [Celio](https://celio.gblink.io/): your Switch with their Game Boy Advance
   (Ruby, Sapphire, Emerald, FireRed or LeafGreen on a GB-Link or in an emulator), or with
@@ -46,8 +49,8 @@ computer.
 
 ## What you need
 
-**GBA to Switch** needs an ESP32 board and a GB-Link adapter. **PC to Switch** and
-**Mystery Gift** need only the ESP32 board.
+**GBA to Switch** needs an ESP32 board and a GB-Link adapter. **Play in your browser**,
+**PC to Switch** and **Mystery Gift** need only the ESP32 board.
 
 - An ESP32 board. The ESP32-S3 is the recommended one.
 
@@ -67,6 +70,9 @@ computer.
   entered the Hall of Fame and the Switch player has finished the Sevii Islands story
   (Cerulean Cave shows on its town map), just like between two GBAs. When the page
   carries the link, turning on its National Dex bypass lets them trade anyway.
+- For Play in your browser: the game's ROM, dumped from your own cartridge (Ruby,
+  Sapphire, Emerald, FireRed or LeafGreen, any language and revision), and its save if you
+  have one.
 
 ## Setting up
 
@@ -83,8 +89,8 @@ boards.
 
 On the Switch, go upstairs in a Pokémon Center to the Direct Corner, pick Trade Center
 or Colosseum and become the leader. On the GBA, pick the same thing and join the group.
-The Switch shows up after a few seconds. When you leave the room the board restarts and
-is ready again about ten seconds later.
+The Switch shows up after a few seconds. When you leave the room the board is ready again
+a few seconds later, or about ten seconds later when the page carries the link.
 
 It also works the other way round: lead the group on the GBA, then join it from the
 Switch.
@@ -102,15 +108,31 @@ talk to the attendant upstairs in a Pokémon Center: the middle counter to trade
 one for the same kind of battle. The page joins the Switch's group once the GBA has
 linked; accept the join on the Switch. The Switch always leads.
 
+### Play in your browser
+
+Pick *Play in this browser* at the top of the page, or open
+<https://switch.gblink.io/#emu>. Drop the game's ROM on the page, with its `.sav` if you
+have one. The page plays clean dumps of the cartridges only. The game and its save stay in
+your browser for next time, and *Save file* downloads the save.
+
+Arrow keys move, X is A, Z is B, A and S are L and R, Enter is Start and Space is Select.
+A gamepad works too, and on a touch screen the buttons are on the screen.
+
+Press *Start* in the link step, then play as on a real GBA: lead a group on the Switch and
+join it from the game, or lead from the game and join from the Switch. FireRed,
+LeafGreen and Emerald play with a Wireless Adapter plugged in. Ruby and Sapphire play as
+in the section above: the Switch leads, and the page joins its group once the game has
+linked at the Cable Club. Keep the tab open while you play.
+
 ### Online with Celio
 
 Pick *Online with Celio* at the top of the page. Create a session and send its Session Id
 to a Celio user, or join theirs; Game Boy Advance and emulator players connect at
 <https://celio.gblink.io/>, another Switch player uses this page. Press
-*Start* once they have joined. The Celio server decides which side leads: the page then
-says whether to lead a group on the Switch or to join the one it opens, and in that case
-asks which room the Switch goes to. The other player talks to their Cable Club attendant
-for the same room. Leaving the room on both consoles ends the session.
+*Start* once they have joined. Whoever presses *Start* first leads: if that is you, lead a
+group on the Switch; otherwise the page opens a group for the Switch to join and asks which
+room the Switch goes to. The other player talks to their Cable Club attendant for the same
+room. Leaving the room on both consoles ends the session. Sessions are for two players.
 
 ### PC to Switch
 
@@ -167,6 +189,7 @@ The GB-Link Team's cards are built for the Switch's English FireRed and LeafGree
 | Directory | Contents |
 | --- | --- |
 | [`web`](web/README.md) | The web page |
+| [`emulator`](emulator/README.md) | The web page's Game Boy Advance emulator |
 | [`firmware`](firmware/README.md) | The ESP32 firmware |
 | [`host`](host/README.md) | The desktop app, in C# |
 | [`cards`](cards/README.md) | The GB-Link Team's Wonder Cards, built for the Switch's games |
@@ -175,7 +198,8 @@ The GB-Link Team's cards are built for the Switch's English FireRed and LeafGree
 
 Nothing needs building to play: the web page installs prebuilt firmware. To build it
 yourself, see [`firmware/README.md`](firmware/README.md). The adapter firmware comes
-from [GBLink-Firmware](https://github.com/GB-Link/GBLink-Firmware).
+from [GBLink-Firmware](https://github.com/GB-Link/GBLink-Firmware). The page's emulator is
+prebuilt in `web/emulator/`; [`emulator/README.md`](emulator/README.md) rebuilds it.
 
 ## Credits
 
@@ -185,14 +209,16 @@ AngeloftheNight091. Pokémon pictures on the page come from [PokeAPI](https://gi
 The Mystery Gift cards and their link code come from
 [gblink-wondercards](https://github.com/GB-Link/gblink-wondercards); the Pocket Casino card
 is by RAF. The Switch's side of Mystery Gift, the FRIEND path and its timing follow
-Decryptu's [pokeldn](https://github.com/Decryptu/pokeldn).
+Decryptu's [pokeldn](https://github.com/Decryptu/pokeldn). The page's emulator is
+[mGBA](https://mgba.io).
 
 ## Licence
 
 AGPL-3.0, see `LICENSE`. The LDN protocol components are GPL-3.0
 (`licenses/LDN-GPL-3.0.txt`), and so are `cards/` and the Mystery Gift code in `web/js/gift/`,
 which come from gblink-wondercards. The web client bundles
-[esptool-js](https://github.com/espressif/esptool-js) (Apache-2.0) and
-[picoflash](https://github.com/picoflash/picoflash) (MIT). `local`, `prod.keys`,
+[esptool-js](https://github.com/espressif/esptool-js) (Apache-2.0),
+[picoflash](https://github.com/picoflash/picoflash) (MIT) and
+[mGBA](https://mgba.io) (MPL-2.0, `web/emulator/LICENSE-mGBA.txt`). `local`, `prod.keys`,
 `title.keys` and build outputs are ignored by git. Not affiliated with Nintendo or The
 Pokémon Company.

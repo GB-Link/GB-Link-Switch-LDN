@@ -67,7 +67,10 @@ LDN_KEYS
 ## How it works
 
 - The board only joins or hosts a room while a GB-Link adapter (or the web client) is
-  connected, so a board that is just plugged into a PC stays out of the way.
+  connected, so a board that is just plugged into a PC stays out of the way. With GB-Link
+  firmware that reports when the GBA looks for a group, and with the web client's
+  emulator, it joins a Switch's room only while the GBA's player looks for one (JOIN
+  GROUP, or the Union Room), and leaves when the player stops looking without joining.
 - **Switch leads:** the board joins the Switch's room and shows it to the GBA as a
   wireless group.
 - **GBA leads:** the board hosts a room that looks like a Switch's, and the Switches
@@ -76,7 +79,9 @@ LDN_KEYS
   `trade_shim.c` smooths over the differences: the Switch version runs one extra
   standby step after a trade, lost messages are resent, and old d-pad reports are
   dropped when they pile up so walking stays responsive.
-- When a session ends, the board restarts and is ready again in about ten seconds.
+- When a session ends, the board is ready again within a few seconds. When the web client
+  carries the adapter over USB, the board restarts instead and is ready again in about ten
+  seconds.
 
 ## Console commands
 
@@ -93,12 +98,6 @@ LDN_KEYS
 
 Some serial tools reset the board when they open the port (DTR). Open it with DTR high
 and RTS low. The original ESP32's console runs at 921600 baud.
-
-## Tests
-
-`tools/` has tests that run on a PC with no hardware: `trade_shim_test.c`,
-`pia_host_test.c`, `ldn_host_test.c` and `pico_link_test.c`. The build command is at the
-top of each file.
 
 ## Troubleshooting
 

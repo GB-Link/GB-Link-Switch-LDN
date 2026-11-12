@@ -63,6 +63,11 @@ static uint32_t s_modeSent;
 static volatile bool s_awaitMode;
 static volatile bool s_wrongCable;
 static volatile bool s_gbaActive;
+/* The client's adapter reports when its GBA last looked for a group, as GB-Link firmware
+   does (the web client's emulator). This chip's adapter is asked directly. */
+static volatile bool s_searchReports;
+static volatile uint16_t s_searchAge;
+static volatile TickType_t s_searchReportAt;
 static uint8_t s_firstFrame[HEADER_LENGTH + 16];
 static uint8_t s_firstFrameLength;
 static uint16_t s_statusLog[8];
@@ -93,7 +98,16 @@ static void frame_complete(const pico_frame_t *frame)
         if (code == 0xFF02) { s_awaitMode = true; s_wrongCable = false; }
         else if (code == 0xFF0D) { s_wrongCable = true; s_awaitMode = false; }
     }
-    if (frame->bytes[2] == PICO_LINK_CHANNEL_DATA)
+    if (frame->bytes[2] == PICO_LINK_CHANNEL_DATA && frame->length == HEADER_LENGTH + 3 &&
+        frame->bytes[HEADER_LENGTH] == 0x1C)
+    {
+        /* Search report. Not logged: it would push the adapter's other reports out of the
+           four-frame log. */
+        s_searchAge = (uint16_t)(frame->bytes[HEADER_LENGTH + 1] | frame->bytes[HEADER_LENGTH + 2] << 8);
+        s_searchReportAt = xTaskGetTickCount();
+        s_searchReports = true;
+    }
+    else if (frame->bytes[2] == PICO_LINK_CHANNEL_DATA)
     {
         if (frame->length >= HEADER_LENGTH + 4 && frame->length < HEADER_LENGTH + CHUNK_LENGTH &&
             frame->bytes[HEADER_LENGTH] == 0x0E)
@@ -319,6 +333,7 @@ bool pico_link_set_port(pico_port_t port)
     s_awaitMode = false;
     s_wrongCable = false;
     s_gbaActive = false;
+    s_searchReports = false;
     s_firstFrameLength = 0;
     pico_link_reset_inbound();
     pico_frame_t discard;
@@ -377,9 +392,6 @@ bool pico_link_poll_inbound(uint8_t *frame, size_t capacity, size_t *length)
 
 void pico_link_set_mode(void) { send_set_mode(); }
 
-/* Frames reach the adapter as they are sent. */
-void pico_link_flush(void) { }
-
 void pico_link_stats(uint32_t *rx_frames, uint32_t *tx_frames, uint32_t *rx_bytes,
                      uint32_t *resync, uint32_t *dropped)
 {
@@ -397,7 +409,13 @@ bool pico_link_gba_active(void) { return s_gbaActive; }
 
 int64_t pico_link_gba_search_age_ms(void)
 {
-    if (s_port == PICO_PORT_HOST) return -1;
+    if (s_port == PICO_PORT_HOST)
+    {
+        if (!s_searchReports) return -1;
+        const uint16_t reported = s_searchAge;
+        if (reported == 0xFFFF) return INT64_MAX;
+        return (int64_t)reported + (int64_t)pdTICKS_TO_MS(xTaskGetTickCount() - s_searchReportAt);
+    }
     const uint32_t age = wa_adapter_search_age_ms();
     return age == UINT32_MAX ? INT64_MAX : (int64_t)age;
 }
@@ -409,8 +427,6 @@ void pico_link_reset_inbound(void)
     pico_frame_t discard;
     while (xQueueReceive(s_inbound, &discard, 0) == pdTRUE) { }
 }
-
-bool pico_link_adapter_on_chip(void) { return true; }
 
 /* No separate board to reflash and no UART pair to swap or probe: the adapter's pins
    are wired straight to the link port. */

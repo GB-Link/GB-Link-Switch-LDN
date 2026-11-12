@@ -1,20 +1,23 @@
-// Ruby or Sapphire on a real GBA trading with the Switch. The adapter plays the game's cable
-// partner (mode 0x01), the ESP32 board runs the Switch's room with this page as its wireless
-// adapter (LDN_ADAPTER host), and the translator converts between the two link protocols.
+// Ruby or Sapphire trading with the Switch. The game's cable partner is a GB-Link adapter in
+// its cable mode (CableLink) or, for the page's emulator, the page itself (EmulatedCable). The
+// ESP32 board runs the Switch's room with this page as its wireless adapter (LDN_ADAPTER
+// host), and the translator converts between the two link protocols.
 
 import { GB_CHANNEL, GbFrameParser } from '../wire.js';
 import { FrameReader, RFU, clientFrame, command, toGbFrames } from '../trade/adapter.js';
 import { CableTranslator } from './translator.js';
-import { CableLink } from './cable.js';
 
 const FRAME_MS = 1000 / 59.7275;
 
 export class CableSession extends EventTarget {
-    constructor(esp, adapter, { bypassNationally = false } = {}) {
+    // openCable(callbacks): the cable link to the game, given the translator's callbacks.
+    // packetMs: the cable's pace, when it is not a GB-Link's.
+    constructor(esp, openCable, { bypassNationally = false, packetMs } = {}) {
         super();
         this.bypassNationally = bypassNationally;
         this.esp = esp;
-        this.adapter = adapter;
+        this.openCable = openCable;
+        this.packetMs = packetMs;
         this.running = false;
         this.translator = null;
         this.cable = null;
@@ -45,6 +48,7 @@ export class CableSession extends EventTarget {
             connect: (devid) => toBoard(command(RFU.CONNECT_REQ, devid)),
             disconnect: () => toBoard(command(RFU.DISCONNECT, 0)),
             log: (message) => this.log(message),
+            packetMs: this.packetMs,
         });
         translator.bypassNationally = this.bypassNationally;
         translator.onLinked = () => this.changed();
@@ -58,7 +62,7 @@ export class CableSession extends EventTarget {
                 }
             } catch (error) { this.fail(error); }
         };
-        this.cable = new CableLink(this.adapter, {
+        this.cable = this.openCable({
             gameCommand: (words) => translator.gameCommand(words),
             nextCommand: () => translator.nextCommand(),
             reset: () => translator.cableReset(),

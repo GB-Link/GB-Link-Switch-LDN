@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>GB-Link Switch LDN</title>
-    <meta name="description" content="Trade and battle with Pokémon FireRed and LeafGreen on the Nintendo Switch: from a real Game Boy Advance, from this page, or online with Celio. This page also sends it Mystery Gift Wonder Cards.">
+    <meta name="description" content="Trade and battle with Pokémon FireRed and LeafGreen on the Nintendo Switch: from a real Game Boy Advance or a game played in this page, from the page itself, or online with Celio. This page also sends it Mystery Gift Wonder Cards.">
     <link rel="icon" href="favicon.ico">
     <link rel="stylesheet" href="style.css">
 </head>
@@ -17,7 +17,7 @@
                 <a href="https://github.com/GB-Link/GB-Link-Switch-LDN">GitHub</a>
             </nav>
         </div>
-        <p>Trade and battle with Pokémon FireRed and LeafGreen on the Nintendo Switch: from a real Game Boy Advance, from this page, or online with Celio. This page also sends it Mystery Gift Wonder Cards.</p>
+        <p>Trade and battle with Pokémon FireRed and LeafGreen on the Nintendo Switch: from a real Game Boy Advance or a game played in this page, from the page itself, or online with Celio. This page also sends it Mystery Gift Wonder Cards.</p>
     </header>
 
     <main>
@@ -28,6 +28,11 @@
                 <strong>Game Boy Advance</strong>
                 <span>Your Game Boy Advance trades and battles with the Switch. Ruby, Sapphire, Emerald, FireRed, LeafGreen.</span>
                 <span class="needs">ESP32 + GB-Link</span>
+            </button>
+            <button class="path" type="button" role="tab" id="path-emu" data-path="emu" aria-selected="false">
+                <strong>Play in this browser</strong>
+                <span>A game played in this page trades and battles with the Switch. Ruby, Sapphire, Emerald, FireRed, LeafGreen.</span>
+                <span class="needs">ESP32</span>
             </button>
             <button class="path" type="button" role="tab" id="path-switch" data-path="switch" aria-selected="false">
                 <strong>Trade from this page</strong>
@@ -214,6 +219,108 @@
             </details>
         </section>
 
+        <section class="card" id="emu-card" data-path="emu" aria-labelledby="emu-title">
+            <div class="card-head">
+                <span class="step">2</span>
+                <div>
+                    <h2 id="emu-title">Game</h2>
+                    <p class="sub" id="emu-sub">Pokémon Ruby, Sapphire, Emerald, FireRed or LeafGreen, dumped from your own cartridge, in any language.</p>
+                </div>
+                <span class="dot" id="emu-dot"></span>
+            </div>
+
+            <div id="emu-pick">
+                <label class="drop" id="emu-drop">
+                    <input type="file" id="emu-files" accept=".gba,.sav" multiple>
+                    <strong>Drop the game's ROM here, with its <code>.sav</code> if you have one</strong>
+                    <span>or click to choose the files</span>
+                </label>
+                <div class="backups" id="emu-kept" hidden>
+                    <p class="backups-title">Kept in this browser</p>
+                    <ul class="backups-list" id="emu-kept-list"></ul>
+                </div>
+            </div>
+
+            <div class="emu-game" id="emu-game" hidden>
+                <div class="emu-screen"><canvas id="emu-screen" width="240" height="160" aria-label="Game screen"></canvas></div>
+                <div class="emu-touch" id="emu-touch" aria-hidden="true">
+                    <div class="emu-shoulders">
+                        <div class="emu-key" data-key="L">L</div>
+                        <div class="emu-key" data-key="R">R</div>
+                    </div>
+                    <div class="emu-pad">
+                        <div class="emu-dpad">
+                            <div class="emu-key emu-up" data-key="UP">▲</div>
+                            <div class="emu-key emu-left" data-key="LEFT">◀</div>
+                            <div class="emu-key emu-right" data-key="RIGHT">▶</div>
+                            <div class="emu-key emu-down" data-key="DOWN">▼</div>
+                        </div>
+                        <div class="emu-ab">
+                            <div class="emu-key emu-round" data-key="B">B</div>
+                            <div class="emu-key emu-round" data-key="A">A</div>
+                        </div>
+                    </div>
+                    <div class="emu-menu">
+                        <div class="emu-key emu-pill" data-key="SELECT">SELECT</div>
+                        <div class="emu-key emu-pill" data-key="START">START</div>
+                    </div>
+                </div>
+                <div class="actions emu-toolbar">
+                    <button type="button" class="emu-keep" id="emu-sound">Sound on</button>
+                    <button type="button" class="emu-keep" id="emu-full">Full screen</button>
+                    <button type="button" id="emu-save">Save file <span class="emu-unsaved" id="emu-unsaved" title="The game saved since its save file was last downloaded" hidden></span></button>
+                    <button type="button" id="emu-load-save">Load a save</button>
+                    <button type="button" id="emu-reset">Reset</button>
+                    <button type="button" id="emu-change">Change game</button>
+                    <input type="file" id="emu-save-file" accept=".sav" hidden>
+                </div>
+                <p class="fine emu-keys">Arrow keys move. X is A, Z is B, A and S are L and R, Enter is Start and Space is Select. A gamepad works too.</p>
+            </div>
+
+            <p class="status" id="emu-status" aria-live="polite"></p>
+            <p class="fine">The game and its save stay in this browser. Nothing is uploaded. <strong>Save file</strong> downloads the save, to keep it safe or to play it elsewhere.</p>
+        </section>
+
+        <section class="card" id="emu-link-card" data-path="emu" aria-labelledby="emu-link-title">
+            <div class="card-head">
+                <span class="step">3</span>
+                <div>
+                    <h2 id="emu-link-title">Link with the Switch</h2>
+                    <p class="sub" id="emu-link-sub">This page carries the game's link to the board. Keep the tab open while you play.</p>
+                </div>
+                <span class="dot" id="emu-link-dot"></span>
+            </div>
+
+            <div class="session" id="emu-session" hidden>
+                <p class="headline" id="emu-headline">–</p>
+                <p class="hint" id="emu-hint"></p>
+            </div>
+            <div class="actions">
+                <button class="primary" id="emu-link-start" disabled>Start</button>
+                <button id="emu-link-stop" hidden>Stop</button>
+            </div>
+            <p class="status" id="emu-link-status" aria-live="polite"></p>
+            <div id="emu-bypass-panel">
+                <label class="fine check"><input type="checkbox" id="emu-bypass"> Bypass the National Dex requirement</label>
+                <p class="fine warn" id="emu-bypass-warning" hidden>Trades go ahead whatever either game's progress. Pokémon from Ruby, Sapphire or Emerald may not be tradable out of the Switch's game until it has the National Dex and has finished the Sevii Islands story (Cerulean Cave shows on its town map). FireRed and LeafGreen need no bypass: leave it off for them.</p>
+            </div>
+
+            <details class="more" open>
+                <summary>In the games</summary>
+                <ol class="fine" id="emu-steps-wireless">
+                    <li>Switch: upstairs in a Pokémon Center, Direct Corner, Trade Center or Colosseum, become the leader. In this page's game, pick the same thing and join the group. The Switch shows up after a few seconds.</li>
+                    <li>Or the other way round: become the leader in this page's game and join its group on the Switch.</li>
+                    <li>After you leave the room, the board restarts and is ready again about ten seconds later.</li>
+                </ol>
+                <ol class="fine" id="emu-steps-cable" hidden>
+                    <li>Switch: upstairs in a Pokémon Center, Direct Corner, Trade Center or Colosseum (single or double battle), become the leader.</li>
+                    <li>Ruby or Sapphire: upstairs in a Pokémon Center, talk to the attendant at the middle counter to trade, or the left one for the same kind of battle.</li>
+                    <li>The page joins the Switch's group once the game has linked. Accept the join on the Switch, then walk to the trade table, or onto the battle spots, in both games.</li>
+                    <li>Leave the room in both games when you are done. After that the board restarts and is ready again about ten seconds later.</li>
+                </ol>
+            </details>
+        </section>
+
         <section class="card" id="trade-card" data-path="switch" aria-labelledby="trade-title">
             <div class="card-head">
                 <span class="step">2</span>
@@ -300,7 +407,7 @@
                 <div class="actions celio-join">
                     <button class="primary" id="celio-create">Create session</button>
                     <span class="fine">or</span>
-                    <input type="text" id="celio-code" placeholder="Session Id" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="go">
+                    <input type="text" id="celio-code" placeholder="Session Id" inputmode="numeric" maxlength="4" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="go">
                     <button id="celio-join" disabled>Join</button>
                 </div>
             </div>
@@ -330,7 +437,7 @@
                 <summary>How it works</summary>
                 <ol class="fine">
                     <li>Create a session and send its Session Id to the other player, or join theirs. On a Game Boy Advance with a GB-Link, or in an emulator, they use <a href="https://celio.gblink.io/" target="_blank" rel="noopener">celio.gblink.io</a>. Both press Start.</li>
-                    <li>The Celio server decides which side leads. The page then says whether to lead a group on the Switch or to join the group it opens, and in that case asks which room.</li>
+                    <li>Whoever presses Start first leads. If that is you, lead a group on the Switch. If the other player was first, the page opens a group for the Switch to join and asks which room.</li>
                     <li>On the Switch: upstairs in a Pokémon Center, the Direct Corner, then the Trade Center or the Colosseum. The other player goes to the same room.</li>
                     <li>Leaving the room on both consoles ends the session. Keep this tab in view while you play.</li>
                 </ol>
@@ -424,7 +531,7 @@
 
     <footer>
         <p>By <a href="https://github.com/starlarkus">Starlark</a>. Part of the <a href="https://gblink.io">GB-Link</a> project.</p>
-        <p>Works in Chrome, Edge and other Chromium browsers on a computer. <a href="https://github.com/GB-Link/GB-Link-Switch-LDN">Source</a> · AGPL-3.0. Firmware is written with <a href="https://github.com/espressif/esptool-js">esptool-js</a> (Apache-2.0) and <a href="https://github.com/picoflash/picoflash">picoflash</a> (MIT). Not affiliated with Nintendo or The Pokémon Company.</p>
+        <p>Works in Chrome, Edge and other Chromium browsers on a computer. <a href="https://github.com/GB-Link/GB-Link-Switch-LDN">Source</a> · AGPL-3.0. Firmware is written with <a href="https://github.com/espressif/esptool-js">esptool-js</a> (Apache-2.0) and <a href="https://github.com/picoflash/picoflash">picoflash</a> (MIT). The emulator is <a href="https://mgba.io">mGBA</a> (<a href="emulator/LICENSE-mGBA.txt">MPL-2.0</a>). Not affiliated with Nintendo or The Pokémon Company.</p>
     </footer>
 
     <script type="module" src="js/app.js"></script>

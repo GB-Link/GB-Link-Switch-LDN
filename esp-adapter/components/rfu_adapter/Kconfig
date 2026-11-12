@@ -3,28 +3,28 @@ menu "GBA wireless adapter"
 config WA_PIN_SC
     int "SC: the link clock (GBA link port pin 5)"
     default 18 if IDF_TARGET_ESP32
-    default 5 if IDF_TARGET_ESP32S3
-    default 19 if IDF_TARGET_ESP32C6
+    default 1 if IDF_TARGET_ESP32S3
+    default 0 if IDF_TARGET_ESP32C6
     default 5
 
 config WA_PIN_SO
     int "SO: the GBA's output (link port pin 2)"
     default 19 if IDF_TARGET_ESP32
-    default 6 if IDF_TARGET_ESP32S3
-    default 20 if IDF_TARGET_ESP32C6
+    default 3 if IDF_TARGET_ESP32S3
+    default 2 if IDF_TARGET_ESP32C6
     default 6
 
 config WA_PIN_SI
     int "SI: the GBA's input (link port pin 3)"
     default 21 if IDF_TARGET_ESP32
-    default 7 if IDF_TARGET_ESP32S3
-    default 18 if IDF_TARGET_ESP32C6
+    default 2 if IDF_TARGET_ESP32S3
+    default 1 if IDF_TARGET_ESP32C6
     default 7
 
 config WA_PIN_SD
     int "SD: the GBA's soft-reset line (link port pin 4)"
     default 22 if IDF_TARGET_ESP32
-    default 8 if IDF_TARGET_ESP32S3
+    default 4 if IDF_TARGET_ESP32S3
     default 21 if IDF_TARGET_ESP32C6
     default 8
 

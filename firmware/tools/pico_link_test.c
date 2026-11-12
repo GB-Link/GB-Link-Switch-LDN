@@ -6,10 +6,12 @@
 
    Adapter model, per the GB-Link firmware: silent until a mode is requested. Status and
    data go to the side that spoke last. Entering the mode answers DeviceReady and
-   AwaitMode. In the mode it reports every 500 ms (tag 0x0E, byte 1 = GBA clocking it).
+   AwaitMode. In the mode it reports every 500 ms (tag 0x0E, byte 1 = GBA clocking it), and
+   firmware with search reports adds tag 0x1C (ms since the GBA last searched, 0xFFFF not yet).
    Timeline: adapter powers after the board, restarts, a USB host takes it over, then it
    restarts with a GBA attached. Entering the mode resets the adapter, so a SetMode that
-   reaches an adapter already in the mode and reporting to this board is a failure. */
+   reaches an adapter already in the mode and reporting to this board is a failure. Then
+   its firmware starts reporting searches, the GBA searches, and the adapter goes silent. */
 
 #include "../common/pico_link.c"
 
@@ -21,6 +23,8 @@
 static struct
 {
     bool powered, in_mode, to_uart, gba;
+    bool reports_searches, searched;
+    TickType_t searched_at;
     TickType_t next_report;
     unsigned entries;     /* times the mode was entered */
     unsigned disrupted;   /* of those, while in the mode and reporting to this board */
@@ -67,6 +71,10 @@ static void adapter_runs(void)
     if (!g_adapter.to_uart) return;
     uint8_t report[16] = {0x0E, g_adapter.gba ? 1 : 0};
     adapter_emit(PICO_LINK_CHANNEL_DATA, report, sizeof(report));
+    if (!g_adapter.reports_searches) return;
+    const uint16_t age = g_adapter.searched ? (uint16_t)(g_now - g_adapter.searched_at) : 0xFFFF;
+    const uint8_t search[3] = {0x1C, (uint8_t)age, (uint8_t)(age >> 8)};
+    adapter_emit(PICO_LINK_CHANNEL_DATA, search, sizeof(search));
 }
 
 static void adapter_power(bool on)
@@ -74,11 +82,17 @@ static void adapter_power(bool on)
     g_adapter.powered = on;
     g_adapter.in_mode = false;
     g_adapter.to_uart = false;
+    g_adapter.searched = false;
 }
 
 /* ---- timeline */
 
-typedef enum { POWER_ON, POWER_OFF, USB_HOST_SPEAKS, GBA_ON, CHECK_LINKED, CHECK_QUIET_SINCE } action_t;
+typedef enum
+{
+    POWER_ON, POWER_OFF, USB_HOST_SPEAKS, GBA_ON, CHECK_LINKED, CHECK_QUIET_SINCE,
+    REPORTS_SEARCHES, GBA_SEARCHES, CHECK_NO_SEARCH_REPORTS, CHECK_NOT_SEARCHED, CHECK_SEARCHED_AT,
+} action_t;
+/* since: the mark for CHECK_QUIET_SINCE, the search's time for CHECK_SEARCHED_AT. */
 typedef struct { TickType_t at; action_t action; TickType_t since; const char *what; } event_t;
 
 static int g_failures;
@@ -114,6 +128,14 @@ static const event_t g_events[] = {
     {70000, POWER_OFF, 0, NULL},
     {70500, POWER_ON, 0, NULL},
     {77000, CHECK_LINKED, 0, "an adapter that restarted under a GBA is put back in the mode"},
+    {78000, CHECK_NO_SEARCH_REPORTS, 0, "firmware without search reports gives no search age"},
+    {78000, REPORTS_SEARCHES, 0, NULL},
+    {79000, CHECK_NOT_SEARCHED, 0, "reported, before the GBA has searched"},
+    {79500, GBA_SEARCHES, 0, NULL},
+    {80500, CHECK_SEARCHED_AT, 79500, "a search shows up within a report"},
+    {84000, CHECK_SEARCHED_AT, 79500, "and grows older between reports"},
+    {84000, POWER_OFF, 0, NULL},
+    {88000, CHECK_NO_SEARCH_REPORTS, 0, "an adapter gone silent no longer reports"},
 };
 static size_t g_next_event;
 
@@ -141,6 +163,20 @@ static void time_passes(TickType_t ticks)
             mark();
             break;
         case CHECK_QUIET_SINCE: check(requests_since(event->since) == 0, event->what); break;
+        case REPORTS_SEARCHES: g_adapter.reports_searches = true; break;
+        case GBA_SEARCHES:
+            g_adapter.searched = true;
+            g_adapter.searched_at = g_now;
+            break;
+        case CHECK_NO_SEARCH_REPORTS: check(pico_link_gba_search_age_ms() == -1, event->what); break;
+        case CHECK_NOT_SEARCHED: check(pico_link_gba_search_age_ms() == INT64_MAX, event->what); break;
+        case CHECK_SEARCHED_AT:
+        {
+            /* Within one report period of the truth. */
+            const int64_t error = pico_link_gba_search_age_ms() - (int64_t)(g_now - event->since);
+            check(error > -500 && error < 500, event->what);
+            break;
+        }
         }
     }
     adapter_runs();
@@ -228,8 +264,8 @@ int uart_write_bytes(int uart, const void *bytes, size_t length)
 
 int main(void)
 {
-    /* UART port: 80 s of board uptime. */
-    g_until = 80000;
+    /* UART port: 90 s of board uptime. */
+    g_until = 90000;
     pico_link_start();
     g_task(NULL);
     check(g_next_event == sizeof(g_events) / sizeof(g_events[0]), "the whole timeline ran");
@@ -250,6 +286,15 @@ int main(void)
     unsigned asked = 0;
     while (pico_link_poll_host_out(frame, sizeof(frame), &length)) ++asked;
     check(asked == 0, "a quiet host port is not asked again");
+
+    /* An adapter the page carries reports searches too (the page's emulator). */
+    check(pico_link_gba_search_age_ms() == -1, "the host port starts without search reports");
+    const uint8_t not_searched[] = {SYNC0, SYNC1, PICO_LINK_CHANNEL_DATA, 3, 0, 0x1C, 0xFF, 0xFF};
+    pico_link_feed_host(not_searched, sizeof(not_searched));
+    check(pico_link_gba_search_age_ms() == INT64_MAX, "a host-port report before any search");
+    const uint8_t searched[] = {SYNC0, SYNC1, PICO_LINK_CHANNEL_DATA, 3, 0, 0x1C, 250, 0};
+    pico_link_feed_host(searched, sizeof(searched));
+    check(pico_link_gba_search_age_ms() == 250, "a host-port report of a search");
 
     printf(g_failures ? "%d FAILED\n" : "all checks pass\n", g_failures);
     return g_failures ? 1 : 0;

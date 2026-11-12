@@ -90,7 +90,7 @@ static struct
 {
     int state;
     bool started;
-    bool restart_pending;               /* adapter on this chip: restart at the next poll */
+    bool restart_pending;               /* start over at the next poll */
     uint16_t union_connect;             /* presence devid the GBA asked to connect to, 0 none */
     bool union_join;                    /* the room joined is a Switch's Union Room presence */
     uint16_t union_devid;               /* that presence's devid, beaconed alone while joined */
@@ -946,15 +946,16 @@ void pia_bridge_stop(void)
     printf("LDN_BRIDGE stopped\n");
 }
 
-/* A finished session or failed join restarts the board, which resumes the room search.
-   After a session the adapter re-enters its mode first, which clears the old room from
-   the GBA's list. After the restart this may be skipped: once a GBA has clocked the
-   adapter, dbgAnyRx stays set and pico_link leaves it alone. */
+/* A finished session or failed join starts the bridge over. With the adapter wired to the
+   board, on this chip or a GB-Link's UART, that happens in place at the next poll. A client
+   carrying the adapter on the host port expects the board to restart and comes back after
+   it (docs/SERIAL_PROTOCOL.md); after a session the adapter it carries re-enters its mode
+   first, which clears the old room from the GBA's list. */
 static void bridge_restart(bool session_ended)
 {
     /* A hosted session can end on the GBA's side, with the Switch still in the room. */
     if (g.state == BR_HOST && g.host && pia_host_station_count(g.host) > 0 && g.session_ms) print_session_summary();
-    if (pico_link_adapter_on_chip())
+    if (pico_link_port() != PICO_PORT_HOST)
     {
         g.restart_pending = true;
         return;
@@ -962,17 +963,17 @@ static void bridge_restart(bool session_ended)
     if (session_ended)
     {
         pico_link_set_mode();
-        pico_link_flush();
         ldn_control_flush_adapter();
     }
     pia_bridge_stop();
     esp_restart();
 }
 
-/* The chip stays up for the adapter it carries: links still open end at the adapter, as
-   when a partner leaves, the radio goes back to the station role for the room search, and
-   the bridge starts over. The adapter keeps its state, so a GBA between links (in the
-   Union Room, or back at the counter) carries on. */
+/* The chip stays up, and so does the adapter, on this chip or a GB-Link's: links still
+   open end at the adapter, as when a partner leaves, the radio goes back to the station
+   role for the room search, and the bridge starts over. Rebooting would put the adapter
+   back into its mode, which strands a GBA that is using it. The adapter keeps its state,
+   so a GBA between links (in the Union Room, or back at the counter) carries on. */
 static void restart_in_place(void)
 {
     if (g.child_connected) send_command(RFU1_DISCONNECT, g.child_devid);

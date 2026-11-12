@@ -7,6 +7,13 @@ import { EspDevice, ESP_FILTERS, FAST_BAUD, newer, reopenPort, sleep } from './e
 import { GbLinkSerial, GbLinkUsb, BOOTROM_VENDOR_ID, GBLINK_VENDOR_ID } from './gblink.js';
 import { Bridge } from './bridge.js';
 import { CableSession } from './cable/session.js';
+import { CableLink } from './cable/cable.js';
+import { GbaEmulator } from './emu/emulator.js';
+import { EmulatorInput } from './emu/input.js';
+import { GameStore } from './emu/store.js';
+import { identifyRom, knownRom } from './emu/roms.js';
+import { EmulatedAdapter } from './emu/wireless.js';
+import { EmulatedCable, PACKET_MS } from './emu/cable.js';
 import { CELIO_SERVER, CelioSession } from './cable/celio.js';
 import { parseProdKeys } from './keys.js';
 import { loadManifest, fetchBytes } from './manifest.js';
@@ -43,7 +50,7 @@ const RESTART_REASONS = {
 
 const state = {
     manifest: null,
-    path: 'gba',            // shown path: gba | switch | celio | gift
+    path: 'gba',            // shown path: gba | emu | switch | celio | gift
 
     esp: null,
     espPort: null,          // picked port that failed to attach
@@ -93,6 +100,16 @@ const state = {
     game: 'wireless',       // the GBA's game: wireless (FRLG, Emerald) | cable (Ruby, Sapphire)
     bypassNationally: false,   // skip the Kanto/Hoenn progress checks; not remembered, off on every visit
     bridge: null,           // Bridge, or CableSession for Ruby and Sapphire
+    bridgePath: null,       // whose game it links: gba (the GB-Link's) | emu (the emulator's)
+    emu: null,              // the emulator, once a game has been chosen: { emulator, input, adapter }
+    emuGame: null,          // the game it plays: a known ROM (roms.js)
+    emuRom: null,           // its bytes
+    emuKept: [],            // the games kept in this browser (store.js)
+    emuUnsaved: false,      // the game saved since its save file was last downloaded
+    emuStarting: false,
+    emuMuted: false,
+    emuFull: false,
+    emuNote: null,          // { text, tone }
     celio: null,            // CelioSession: in a Celio session, linking once started
     celioNote: null,        // { text, tone }
     celioServer: CELIO_SERVER,
@@ -110,7 +127,8 @@ const state = {
     giftNote: null,         // { text, tone }
     giftClosing: false,     // Stop pressed: waiting for the board to close its room and restart
     bridgeTimer: null,
-    bridgeNote: null,
+    bridgeStarting: false,
+    bridgeNote: null,       // { text, tone, path }
     wiringNote: null,
 };
 
@@ -563,6 +581,7 @@ async function pollSession() {
         return;   // board restarting, retry next poll
     }
     renderSession();
+    renderEmuLink();
     renderCelio();
     renderGift();
 }
@@ -580,82 +599,76 @@ function roomWord(esp, status, signal) {
     return 'not heard';
 }
 
+// How the session texts name the game: the GBA's on its GB-Link, or the emulator's.
+const GBA_WORDS = {
+    the: 'the Game Boy Advance', The: 'The Game Boy Advance', whose: 'the Game Boy Advance’s', gba: 'the GBA',
+    on: 'On the GBA', onCable: 'On the Game Boy Advance', lead: 'lead a group on the Game Boy Advance',
+    both: 'both consoles', bypass: 'the National Dex bypass above', cable: 'Ruby or Sapphire',
+};
+const EMU_WORDS = {
+    the: 'the game', The: 'The game', whose: 'the game’s', gba: 'the game',
+    on: 'In the game', onCable: 'In the game', lead: 'lead a group in the game',
+    both: 'both games', bypass: 'the National Dex bypass below', cable: null,
+};
+const KEYS_VIEW = { headline: 'The board needs its keys.', hint: 'Without them it cannot read the Switch\'s wireless. Add your prod.keys in step 1.', tone: 'warn' };
+
 function renderSession() {
     const status = state.session;
     const box = $('session');
     box.hidden = !state.esp;
     if (!state.esp) { $('play-dot').className = 'dot'; return; }
-    let headline = 'Waiting for the board…';
-    let hint = '';
-    let tone = '';
+    let view;
     if (state.resetLoop && state.adapter) {
-        headline = 'The game keeps restarting the wireless adapter.';
-        hint = 'On the GBA this looks like a freeze. It is usually the link cable: it must be a Game Boy Color cable, not a Game Boy Advance one, and the adapter needs the firmware from step 2.';
-        tone = 'warn';
+        view = { headline: 'The game keeps restarting the wireless adapter.', hint: 'On the GBA this looks like a freeze. It is usually the link cable: it must be a Game Boy Color cable, not a Game Boy Advance one, and the adapter needs the firmware from step 2.', tone: 'warn' };
     } else if (state.keys && !state.keys.complete) {
-        headline = 'The board needs its keys.';
-        hint = 'Without them it cannot read the Switch\'s wireless. Add your prod.keys in step 1.';
-        tone = 'warn';
-    } else if (state.bridge instanceof CableSession) {
-        ({ headline, hint, tone } = cableView(state.bridge, status));
+        view = KEYS_VIEW;
+    } else if (state.bridgePath === 'gba' && state.bridge instanceof CableSession) {
+        view = cableView(state.bridge, status, GBA_WORDS);
     } else if (state.game === 'cable') {
-        headline = 'Press Start to link Ruby or Sapphire with the Switch.';
-        hint = 'Both boards stay on USB: this page does the linking.';
-    } else if (status) {
-        const running = status.state === 'run';
-        if (status.state === 'stopped' || status.state === 'idle') {
-            headline = 'The bridge is stopped.';
-            hint = 'Unplug the board and plug it back in.';
-            tone = 'warn';
-        } else if (status.state === 'scan' && state.esp.hearsUnreadableRoom) {
-            headline = 'The board hears a Switch’s room but cannot read it.';
-            hint = 'The keys it holds do not match. Replace the keys in step 1 with a prod.keys from your own Switch.';
-            tone = 'warn';
-        } else if (status.state === 'scan') {
-            headline = 'Looking for a FireRed or LeafGreen room…';
-            hint = 'On the Switch, open the Trade Center or Colosseum as the group leader, or lead a group on the Game Boy Advance and the board hosts the room instead.';
-        } else if (status.state === 'host' && status.child === '1') {
-            headline = 'The Switch is in the Game Boy Advance’s group.';
-            hint = 'Leave the group on both consoles when you are done; the board then gets ready for the next one.';
-            tone = 'good';
-        } else if (status.state === 'host' && Number(status.members) > 0) {
-            headline = 'The Switch is in the room. Waiting for it to join the group.';
-            hint = 'On the Switch, pick the group the Game Boy Advance is leading.';
-            tone = 'good';
-        } else if (status.state === 'host') {
-            headline = 'Hosting a room for the Switch.';
-            hint = 'The Game Boy Advance is leading. On the Switch, open the same activity in the Direct Corner and join the group.';
-        } else if (!running) {
-            headline = 'Joining the Switch’s room…';
-        } else if (status.child === '1') {
-            headline = 'The Game Boy Advance and the Switch are linked.';
-            hint = 'Leave the room on both consoles when you are done; the board then gets ready for the next one.';
-            tone = 'good';
-        } else if (status.conn_state === '2') {
-            headline = 'In the Switch’s room. Waiting for the Game Boy Advance.';
-            hint = 'On the GBA, choose the same activity and join the group.';
-            if (status.national === '0' && !state.bypassNationally) hint += ' Emerald cannot trade with this game yet: the Switch player has to finish the Sevii Islands story first (Cerulean Cave shows on the town map once it is done). Until then Emerald says the other trainer is not ready; the National Dex bypass above lets it trade anyway. FireRed and LeafGreen can trade now, and battles work with any game.';
-            tone = 'good';
-        } else {
-            headline = 'In the Switch’s room, setting up the session…';
-        }
+        view = { headline: 'Press Start to link Ruby or Sapphire with the Switch.', hint: 'Both boards stay on USB: this page does the linking.', tone: '' };
+    } else {
+        view = wirelessView(status, GBA_WORDS);
     }
-    $('session-headline').textContent = headline;
-    $('session-hint').textContent = hint;
-    box.className = `session ${tone}`.trim();
-    $('play-dot').className = `dot ${tone === 'good' ? 'good' : tone === 'warn' ? 'warn' : 'busy'}`;
+    drawSession(box, $('session-headline'), $('session-hint'), $('play-dot'), view);
+}
+
+function drawSession(box, headline, hint, dot, view) {
+    headline.textContent = view.headline;
+    hint.textContent = view.hint;
+    box.className = `session ${view.tone}`.trim();
+    dot.className = `dot ${view.tone === 'good' ? 'good' : view.tone === 'warn' ? 'warn' : 'busy'}`;
+}
+
+// A game on the wireless: the board joins the Switch's room, or hosts one when the game leads.
+function wirelessView(status, w) {
+    if (!status) return { headline: 'Waiting for the board…', hint: '', tone: '' };
+    if (status.state === 'stopped' || status.state === 'idle') return { headline: 'The bridge is stopped.', hint: 'Unplug the board and plug it back in.', tone: 'warn' };
+    if (status.state === 'scan' && state.esp.hearsUnreadableRoom) return { headline: 'The board hears a Switch’s room but cannot read it.', hint: 'The keys it holds do not match. Replace the keys in step 1 with a prod.keys from your own Switch.', tone: 'warn' };
+    if (status.state === 'scan') return { headline: 'Looking for a FireRed or LeafGreen room…', hint: `On the Switch, open the Trade Center or Colosseum as the group leader, or ${w.lead} and the board hosts the room instead.`, tone: '' };
+    if (status.state === 'host' && status.child === '1') return { headline: `The Switch is in ${w.whose} group.`, hint: `Leave the group on ${w.both} when you are done; the board then gets ready for the next one.`, tone: 'good' };
+    if (status.state === 'host' && Number(status.members) > 0) return { headline: 'The Switch is in the room. Waiting for it to join the group.', hint: `On the Switch, pick the group ${w.the} is leading.`, tone: 'good' };
+    if (status.state === 'host') return { headline: 'Hosting a room for the Switch.', hint: `${w.The} is leading. On the Switch, open the same activity in the Direct Corner and join the group.`, tone: '' };
+    if (status.state !== 'run') return { headline: 'Joining the Switch’s room…', hint: '', tone: '' };
+    if (status.child === '1') return { headline: `${w.The} and the Switch are linked.`, hint: `Leave the room on ${w.both} when you are done; the board then gets ready for the next one.`, tone: 'good' };
+    if (status.conn_state === '2') {
+        let hint = `${w.on}, choose the same activity and join the group.`;
+        if (status.national === '0' && !state.bypassNationally) hint += ` Emerald cannot trade with this game yet: the Switch player has to finish the Sevii Islands story first (Cerulean Cave shows on the town map once it is done). Until then Emerald says the other trainer is not ready; ${w.bypass} lets it trade anyway. FireRed and LeafGreen can trade now, and battles work with any game.`;
+        return { headline: `In the Switch’s room. Waiting for ${w.the}.`, hint, tone: 'good' };
+    }
+    return { headline: 'In the Switch’s room, setting up the session…', hint: '', tone: '' };
 }
 
 // Ruby or Sapphire: the board finds and joins the Switch's room; the page joins the group
 // once the game has linked on the cable.
-function cableView(cable, status) {
-    if (cable.linked) return { headline: 'Ruby or Sapphire and the Switch are linked.', hint: 'Leave the room on both consoles when you are done; the board then gets ready for the next one.', tone: 'good' };
+function cableView(cable, status, w) {
+    const game = w.cable ?? state.emuGame?.game ?? 'Ruby or Sapphire';
+    if (cable.linked) return { headline: `${game} and the Switch are linked.`, hint: `Leave the room on ${w.both} when you are done; the board then gets ready for the next one.`, tone: 'good' };
     if (!status || status.state === 'scan') return { headline: 'Looking for the Switch’s room…', hint: 'On the Switch, open the Trade Center or the Colosseum in the Direct Corner as the group leader.', tone: '' };
     if (status.state !== 'run') return { headline: 'Joining the Switch’s room…', hint: '', tone: '' };
-    if (cable.switchNotReady) return { headline: 'The Switch’s game cannot trade with Ruby or Sapphire yet.', hint: 'Ruby and Sapphire trade with FireRed and LeafGreen only once that game has finished the Sevii Islands story (Cerulean Cave shows on its town map). Two Game Boy Advance games have the same rule. Ruby and Sapphire have no message for it, so the GBA says the link partners made different selections.', tone: 'warn' };
+    if (cable.switchNotReady) return { headline: `The Switch’s game cannot trade with ${game} yet.`, hint: `Ruby and Sapphire trade with FireRed and LeafGreen only once that game has finished the Sevii Islands story (Cerulean Cave shows on its town map). Two Game Boy Advance games have the same rule. Ruby and Sapphire have no message for it, so ${w.gba} says the link partners made different selections.`, tone: 'warn' };
     if (cable.tradeReady) return { headline: 'Joining the Switch’s group…', hint: 'Accept the join on the Switch.', tone: 'good' };
-    if (cable.cableOpen) return { headline: 'Ruby or Sapphire is linking…', hint: '', tone: 'good' };
-    return { headline: 'In the Switch’s room. Waiting for Ruby or Sapphire.', hint: 'On the Game Boy Advance, upstairs in a Pokémon Center, talk to the attendant at the middle counter to trade, or the left one for the same kind of battle as on the Switch.', tone: 'good' };
+    if (cable.cableOpen) return { headline: `${game} is linking…`, hint: '', tone: 'good' };
+    return { headline: `In the Switch’s room. Waiting for ${game}.`, hint: `${w.onCable}, upstairs in a Pokémon Center, talk to the attendant at the middle counter to trade, or the left one for the same kind of battle as on the Switch.`, tone: 'good' };
 }
 
 // ---------------------------------------------------------------- adapter: what to show
@@ -805,7 +818,7 @@ function onResetLoop({ looping, startedUp }) {
 
 async function dropAdapter(problem = null) {
     const adapter = state.adapter;
-    if (state.bridge) await stopBridge('The adapter went away.');
+    if (state.bridgePath === 'gba') await stopBridge('The adapter went away.');
     state.adapter = null;
     state.adapterInfo = null;
     state.bootDevice = null;
@@ -852,7 +865,7 @@ async function onAdapterInstall() {
     const install = (state.install = { step: 'restart', manual: !adapter, image });
     render();
     if (!adapter) return;
-    if (state.bridge) await stopBridge();
+    if (state.bridgePath === 'gba') await stopBridge();
     // Release first: it drops off the bus on restart, which is not an unplug.
     state.adapter = null;
     state.adapterInfo = null;
@@ -982,27 +995,38 @@ function bridgeBlocker() {
 }
 
 async function onBridgeStart() {
-    if (state.bridge || bridgeBlocker()) return;
+    if (state.bridge || state.bridgeStarting || bridgeBlocker()) return;
     const cable = state.game === 'cable';
     const options = { bypassNationally: state.bypassNationally };
-    const bridge = cable ? new CableSession(state.esp, state.adapter, options) : new Bridge(state.esp, state.adapter, options);
+    const adapter = state.adapter;
+    const bridge = cable ? new CableSession(state.esp, (callbacks) => new CableLink(adapter, callbacks), options) : new Bridge(state.esp, adapter, options);
+    await startBridge('gba', bridge, cable ? 'linking Ruby or Sapphire with the Switch' : 'carrying the link between the boards');
+}
+
+// Carries a game's link through the board: the GB-Link's (path gba) or the emulator's (emu).
+async function startBridge(path, bridge, what) {
     bridge.addEventListener('failed', (event) => stopBridge(`Stopped: ${describe(event.detail)}`, 'bad'));
-    if (cable) {
+    if (bridge instanceof CableSession) {
         bridge.addEventListener('log', (event) => log('cable', event.detail));
-        bridge.addEventListener('change', () => renderSession());
+        bridge.addEventListener('change', () => { renderSession(); renderEmuLink(); });
     }
-    state.bridgeNote = null;
-    setLine('bridge-status', 'Starting…');
+    state.bridgeStarting = true;
+    state.bridgeNote = { text: 'Starting…', tone: '', path };
+    render();
     try {
         await bridge.start();
     } catch (error) {
-        state.bridgeNote = { text: describe(error), tone: 'bad' };
+        state.bridgeStarting = false;
+        state.bridgeNote = { text: describe(error), tone: 'bad', path };
         render();
         return;
     }
+    state.bridgeStarting = false;
     state.bridge = bridge;
+    state.bridgePath = path;
+    state.bridgeNote = null;
     state.bridgeTimer = setInterval(renderBridge, 1000);
-    log('page', cable ? 'linking Ruby or Sapphire with the Switch' : 'carrying the link between the boards');
+    log('page', what);
     render();
     renderBridge();
     pollSoon();
@@ -1011,12 +1035,21 @@ async function onBridgeStart() {
 async function stopBridge(message = null, tone = '') {
     const bridge = state.bridge;
     if (!bridge) return;
+    const path = state.bridgePath;
     state.bridge = null;
+    state.bridgePath = null;
     clearInterval(state.bridgeTimer);
     await bridge.stop();
-    state.bridgeNote = message ? { text: message, tone } : null;
+    state.bridgeNote = message ? { text: message, tone, path } : null;
     log('page', 'no longer carrying the link');
     render();
+}
+
+// Why another kind of link cannot start while a game's link is carried.
+function bridgeBusy() {
+    return state.bridgePath === 'emu'
+        ? 'This page is linking the game it plays with the Switch. Stop that first.'
+        : 'This page is carrying the link for a Game Boy Advance. Stop that first.';
 }
 
 function renderBridge() {
@@ -1060,11 +1093,299 @@ async function onWiringCheck() {
     }
 }
 
+// ---------------------------------------------------------------- the emulator
+
+const gameStore = new GameStore();
+// Pokémon's battery save is 128 KB of flash; emulators may add a footer (the clock).
+const SAVE_SIZE = 0x20000;
+
+// The emulator, loaded with the first game: the core, its keys and its wireless adapter.
+async function loadEmulator() {
+    if (state.emu) return state.emu;
+    const emulator = await GbaEmulator.create();
+    const adapter = new EmulatedAdapter(emulator);
+    const input = new EmulatorInput(emulator, () => state.path === 'emu' && Boolean(state.emuGame), $('emu-touch'), startSound);
+    emulator.onSaveChange = (save) => {
+        if (!state.emuGame) return;
+        state.emuUnsaved = true;
+        gameStore.updateSave(state.emuGame.crc, save);
+        renderEmu();
+    };
+    input.attach();
+    state.emu = { emulator, input, adapter };
+    return state.emu;
+}
+
+// Browsers start sound only after a key or touch of the player's. With sound on, the game
+// follows the sound clock, which keeps going in a background tab.
+function startSound() {
+    const emulator = state.emu?.emulator;
+    if (!emulator) return;
+    emulator.setVolume(state.emuMuted ? 0 : 1);
+    emulator.enableAudio().catch(() => {});
+}
+
+// Starts a game from its ROM and the save to start from (null for none).
+async function emuPlay(rom, game, save, unsaved) {
+    if (state.emuStarting) return;
+    if (state.bridgePath === 'emu') {
+        state.emuNote = { text: 'Stop the link in step 3 before changing the game or its save.', tone: 'warn' };
+        renderEmu();
+        return;
+    }
+    state.emuStarting = true;
+    state.emuNote = null;
+    renderEmu();
+    try {
+        const { emulator } = await loadEmulator();
+        emulator.checkSave();
+        if (!emulator.load(rom, save, game.link)) throw new Error('The emulator could not start this game.');
+        state.emuGame = game;
+        state.emuRom = rom;
+        state.emuUnsaved = unsaved;
+        emulator.attachCanvas($('emu-screen'));
+        emulator.start();
+        startSound();
+        await gameStore.put({ id: game.crc, title: game.title, name: game.name, rom, save, unsaved });
+        state.emuKept = await gameStore.list();
+        log('emulator', `playing ${game.title}${game.link === 'cable' ? ', linked by cable' : ''}`);
+    } catch (error) {
+        state.emuNote = { text: describe(error), tone: 'bad' };
+    } finally {
+        state.emuStarting = false;
+        render();
+    }
+}
+
+// A battery save from a file, or null with a note when it is not one.
+async function readSave(file) {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    if (bytes.length < SAVE_SIZE) {
+        state.emuNote = { text: `${file.name} is not a save of these games: they keep 128 KB.`, tone: 'bad' };
+        return null;
+    }
+    return bytes.slice(0, SAVE_SIZE);
+}
+
+// ROM and save files chosen or dropped on the card. A ROM without a save carries on from the
+// save kept for it here.
+async function onEmuFiles(files) {
+    const list = [...(files ?? [])];
+    const romFile = list.find((file) => /\.gba$/i.test(file.name));
+    const saveFile = list.find((file) => /\.(sav|srm)$/i.test(file.name));
+    if (!romFile && !saveFile) return;
+    state.emuNote = null;
+    if (!romFile) {
+        if (state.emuGame) await emuLoadSave(saveFile);
+        else state.emuNote = { text: 'Choose the game\'s ROM (.gba) together with its save.', tone: 'warn' };
+        renderEmu();
+        return;
+    }
+    const rom = new Uint8Array(await romFile.arrayBuffer());
+    const check = identifyRom(rom);
+    if (!check.ok) {
+        state.emuNote = { text: check.message, tone: 'bad' };
+        renderEmu();
+        return;
+    }
+    let save = null, unsaved = false;
+    if (saveFile) {
+        save = await readSave(saveFile);
+        if (!save) { renderEmu(); return; }
+    } else {
+        const kept = await gameStore.get(check.rom.crc);
+        if (kept?.save) ({ save, unsaved } = kept);
+    }
+    await emuPlay(rom, check.rom, save, unsaved);
+}
+
+// The game starts over from another save.
+async function emuLoadSave(file) {
+    const save = await readSave(file);
+    if (!save || !state.emuGame) return;
+    await emuPlay(state.emuRom, state.emuGame, save, false);
+}
+
+async function emuPlayKept(id) {
+    const kept = await gameStore.get(id);
+    const game = knownRom(id);
+    if (!kept || !game) {
+        state.emuNote = { text: 'This game is no longer kept in the browser. Choose its ROM again.', tone: 'warn' };
+        state.emuKept = await gameStore.list();
+        renderEmu();
+        return;
+    }
+    await emuPlay(kept.rom, game, kept.save, kept.unsaved);
+}
+
+async function emuRemoveKept(id) {
+    await gameStore.remove(id);
+    state.emuKept = await gameStore.list();
+    renderEmu();
+}
+
+function downloadSave(game, save) {
+    const url = URL.createObjectURL(new Blob([save], { type: 'application/octet-stream' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${game.name}.sav`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    log('emulator', `downloaded the save of ${game.title}`);
+}
+
+function emuDownloadSave() {
+    const game = state.emuGame;
+    if (!game || !state.emu) return;
+    downloadSave(game, state.emu.emulator.getSave());
+    state.emuUnsaved = false;
+    gameStore.markDownloaded(game.crc);
+    renderEmu();
+}
+
+async function emuDownloadKept(id) {
+    const kept = await gameStore.get(id);
+    const game = knownRom(id);
+    if (!kept?.save || !game) return;
+    downloadSave(game, kept.save);
+    await gameStore.markDownloaded(id);
+    state.emuKept = await gameStore.list();
+    renderEmu();
+}
+
+// Back to the list of games; the save stays kept.
+async function emuChangeGame() {
+    if (state.bridgePath === 'emu' || !state.emu) return;
+    setEmuFull(false);
+    state.emu.emulator.checkSave();
+    state.emu.emulator.unload();
+    state.emuGame = null;
+    state.emuRom = null;
+    state.emuKept = await gameStore.list();
+    render();
+}
+
+function setEmuFull(full) {
+    state.emuFull = full;
+    $('emu-game').classList.toggle('full', full);
+    if (full) $('emu-game').requestFullscreen?.().catch(() => {});
+    else if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    renderEmu();
+}
+
+// Rebuilt only when it changes, so a Remove that is waiting for its second click stays armed.
+let emuKeptShown = '';
+function renderEmuKept() {
+    $('emu-kept').hidden = !state.emuKept.length;
+    const shown = JSON.stringify([state.emuStarting, state.emuKept.map((kept) => [kept.id, Boolean(kept.save), kept.unsaved])]);
+    if (shown === emuKeptShown) return;
+    emuKeptShown = shown;
+    $('emu-kept-list').replaceChildren(...state.emuKept.map((kept) => {
+        const item = document.createElement('li');
+        const copy = document.createElement('div');
+        copy.className = 'backup-copy';
+        copy.append(text('p', 'backup-name', kept.title));
+        const meta = !kept.save ? 'No save yet' : kept.unsaved ? 'Saved since its save file was last downloaded' : 'Save file up to date';
+        copy.append(text('p', 'backup-meta', meta));
+        const actions = document.createElement('div');
+        actions.className = 'actions';
+        const button = (label, action, primary = false) => {
+            const element = document.createElement('button');
+            element.type = 'button';
+            element.textContent = label;
+            if (primary) element.className = 'primary';
+            element.disabled = state.emuStarting;
+            element.addEventListener('click', action);
+            actions.append(element);
+        };
+        button('Play', () => emuPlayKept(kept.id), true);
+        if (kept.save) button('Save file', () => emuDownloadKept(kept.id));
+        button('Remove', (event) => twice(event.currentTarget, kept.unsaved ? 'Click again: its save was not downloaded' : 'Click again to remove it', () => emuRemoveKept(kept.id)));
+        item.append(copy, actions);
+        return item;
+    }));
+}
+
+function renderEmu() {
+    const game = state.emuGame;
+    const linking = state.bridgePath === 'emu';
+    $('emu-pick').hidden = Boolean(game);
+    $('emu-game').hidden = !game;
+    $('emu-files').disabled = state.emuStarting;
+    renderEmuKept();
+    $('emu-sub').textContent = game
+        ? `${game.title}. ${game.link === 'cable' ? 'It has no wireless: this page links it by cable and turns that link into the Switch\'s wireless.' : 'It plays with a Wireless Adapter plugged in.'}`
+        : 'Pokémon Ruby, Sapphire, Emerald, FireRed or LeafGreen, dumped from your own cartridge, in any language.';
+    $('emu-sound').textContent = state.emuMuted ? 'Sound off' : 'Sound on';
+    $('emu-full').textContent = state.emuFull ? 'Exit full screen' : 'Full screen';
+    $('emu-unsaved').hidden = !state.emuUnsaved;
+    for (const id of ['emu-load-save', 'emu-reset', 'emu-change']) {
+        $(id).disabled = linking;
+        $(id).title = linking ? 'Stop the link in step 3 first.' : '';
+    }
+    setLine('emu-status', state.emuNote?.text ?? (state.emuStarting ? 'Starting the game…' : ''), state.emuNote?.tone ?? '');
+    $('emu-dot').className = `dot ${state.emuStarting ? 'busy' : game ? 'good' : ''}`.trim();
+    renderEmuLink();
+}
+
+// Why the game's link cannot start, or null.
+function emuLinkBlocker() {
+    if (state.trade) return 'This page is trading with the Switch itself. Disconnect there first.';
+    if (state.celio?.running) return 'This page is linking with Celio. Leave that session first.';
+    if (state.gift) return 'This page is sending Mystery Gifts. Stop that first.';
+    if (!state.esp?.attached) return 'Connect the ESP32 board in step 1.';
+    if (!state.emuGame) return 'Start a game in step 2.';
+    if (state.esp.info?.transport === 'UART' && state.esp.baudRate < FAST_BAUD) return 'This board’s firmware runs its console at 115200 baud, which cannot carry the link. Update it in step 1.';
+    if (!state.keys?.complete) return 'The board needs its keys from step 1.';
+    return null;
+}
+
+async function onEmuLinkStart() {
+    if (state.bridge || state.bridgeStarting || emuLinkBlocker()) return;
+    const game = state.emuGame;
+    const { emulator, adapter } = state.emu;
+    const options = { bypassNationally: state.bypassNationally };
+    const bridge = game.link === 'cable'
+        ? new CableSession(state.esp, (callbacks) => new EmulatedCable(emulator, callbacks), { ...options, packetMs: PACKET_MS })
+        : new Bridge(state.esp, adapter, options);
+    await startBridge('emu', bridge, `linking ${game.title} in this page with the Switch`);
+}
+
+function emuSessionView() {
+    const game = state.emuGame;
+    if (!game) return { headline: 'Start a game in step 2.', hint: '', tone: '' };
+    if (state.keys && !state.keys.complete) return KEYS_VIEW;
+    const bridge = state.bridgePath === 'emu' ? state.bridge : null;
+    if (!bridge) return { headline: `Press Start to link ${game.title} with the Switch.`, hint: 'The board then joins the Switch\'s room, or hosts one when the game leads.', tone: '' };
+    return bridge instanceof CableSession ? cableView(bridge, state.session, EMU_WORDS) : wirelessView(state.session, EMU_WORDS);
+}
+
+function renderEmuLink() {
+    const linking = state.bridgePath === 'emu';
+    const blocker = emuLinkBlocker();
+    const cable = state.emuGame?.link === 'cable';
+    $('emu-session').hidden = !state.esp;
+    if (state.esp) drawSession($('emu-session'), $('emu-headline'), $('emu-hint'), $('emu-link-dot'), emuSessionView());
+    else $('emu-link-dot').className = 'dot';
+    $('emu-link-start').hidden = linking;
+    $('emu-link-start').disabled = Boolean(blocker) || Boolean(state.bridge) || state.bridgeStarting;
+    $('emu-link-stop').hidden = !linking;
+    const note = state.bridgeNote?.path === 'emu' ? state.bridgeNote : null;
+    if (linking) setLine('emu-link-status', 'Carrying the link. Keep this tab open.', 'good');
+    else if (note) setLine('emu-link-status', note.text, note.tone);
+    else setLine('emu-link-status', blocker ?? 'Ready.');
+    $('emu-bypass').checked = state.bypassNationally;
+    $('emu-bypass-warning').hidden = !state.bypassNationally;
+    $('emu-steps-cable').hidden = !cable;
+    $('emu-steps-wireless').hidden = cable;
+}
+
 // ---------------------------------------------------------------- the page's two trees
 
-// gba: GBA linked with the Switch (adapter and play cards). switch: Switch alone (trade
-// card). celio: online. gift: Mystery Gift. Board setup is the same for all.
-const PATHS = ['gba', 'switch', 'celio', 'gift'];
+// gba: GBA linked with the Switch (adapter and play cards). emu: the game in this page's
+// emulator linked with the Switch. switch: Switch alone (trade card). celio: online. gift:
+// Mystery Gift. Board setup is the same for all.
+const PATHS = ['gba', 'emu', 'switch', 'celio', 'gift'];
 const PATH_STORE = 'gblink-switch-path';
 
 function remembered(key) {
@@ -1085,6 +1406,11 @@ function pathBusy() {
 function choosePath(path, { keep = true } = {}) {
     if (!PATHS.includes(path) || (path !== state.path && pathBusy())) return;
     state.path = path;
+    // The emulator's game pauses while another path is shown.
+    if (state.emuGame) {
+        if (path === 'emu') state.emu.emulator.start();
+        else state.emu.emulator.stop();
+    }
     if (keep) {
         remember(PATH_STORE, path);
         history.replaceState(null, '', `${location.pathname}${location.search}#${path}`);
@@ -1134,7 +1460,7 @@ function celioBoardBlocker() {
 
 // Why the link cannot start, or null.
 function celioBlocker() {
-    if (state.bridge) return 'This page is carrying the link for a Game Boy Advance. Stop that first.';
+    if (state.bridge) return bridgeBusy();
     if (state.trade) return 'This page is trading with the Switch itself. Disconnect there first.';
     if (state.gift) return 'This page is sending Mystery Gifts. Stop that first.';
     return celioBoardBlocker();
@@ -1217,7 +1543,7 @@ const ROOM_OF_LINK_TYPE = { 0x1133: 4, 0x2233: 1, 0x2244: 2 };
 // once the other side is ready; as the child the page opens a group the Switch joins, and the
 // two exchange players once the other side's is in.
 function celioView(session, status) {
-    if (!session.role) return { headline: 'Waiting for the Celio server…', hint: 'It decides which side leads once both have pressed Start.', tone: '' };
+    if (!session.role) return { headline: 'Waiting for the Celio server…', hint: 'Whoever presses Start first leads.', tone: '' };
     if (session.leading) return celioLeadView(session, status);
     if (session.linked) return { headline: 'Linked with the other player.', hint: 'Leaving the room on both consoles ends the session.', tone: 'good' };
     if (!status || status.state === 'scan') return { headline: 'Your Switch leads. Looking for its group…', hint: 'On the Switch: upstairs in a Pokémon Center, the Direct Corner, then the Trade Center or the Colosseum. Become the group leader.', tone: '' };
@@ -1378,7 +1704,7 @@ async function onGiftFile(file) {
 
 // Why the group cannot open, or null.
 function giftBlocker() {
-    if (state.bridge) return 'This page is carrying the link for a Game Boy Advance. Stop that first.';
+    if (state.bridge) return bridgeBusy();
     if (state.trade) return 'This page is trading with the Switch itself. Disconnect there first.';
     if (state.celio?.running) return 'This page is linking with Celio. Leave that session first.';
     if (!state.esp?.attached) return 'Connect the ESP32 board in step 1.';
@@ -1682,7 +2008,7 @@ function tradeBlocker() {
     if (!state.esp) return 'Connect the ESP32 board in step 1 first.';
     if (!state.esp.info) return 'Install the firmware in step 1 first.';
     if (!state.keys?.complete) return 'The board needs its keys before it can read the Switch\'s wireless.';
-    if (state.bridge) return 'This page is carrying the link for a Game Boy Advance. Stop that first.';
+    if (state.bridge) return bridgeBusy();
     if (state.celio?.running) return 'This page is linking with Celio. Leave that session first.';
     if (state.gift) return 'This page is sending Mystery Gifts. Stop that first.';
     if (pooling()) return poolServer() ? null : 'The trade pool server\'s address has to start with wss:// or ws://.';
@@ -2120,15 +2446,18 @@ function render() {
     setLine('wiring-status', state.wiringNote?.text, state.wiringNote?.tone);
 
     const blocker = bridgeBlocker();
-    $('bridge-start').hidden = Boolean(state.bridge);
-    $('bridge-start').disabled = Boolean(blocker);
-    $('bridge-stop').hidden = !state.bridge;
-    $('bridge-facts').hidden = !state.bridge?.stats;
+    const gbaBridge = state.bridgePath === 'gba' ? state.bridge : null;
+    const gbaNote = state.bridgeNote?.path === 'gba' ? state.bridgeNote : null;
+    $('bridge-start').hidden = Boolean(gbaBridge);
+    $('bridge-start').disabled = Boolean(blocker) || Boolean(state.bridge) || state.bridgeStarting;
+    $('bridge-stop').hidden = !gbaBridge;
+    $('bridge-facts').hidden = !gbaBridge?.stats;
     renderGame();
     renderCelio();
     renderGift();
-    if (state.bridge) setLine('bridge-status', 'Carrying the link. Keep this tab open and in view.', 'good');
-    else if (state.bridgeNote) setLine('bridge-status', state.bridgeNote.text, state.bridgeNote.tone);
+    renderEmu();
+    if (gbaBridge) setLine('bridge-status', 'Carrying the link. Keep this tab open and in view.', 'good');
+    else if (gbaNote) setLine('bridge-status', gbaNote.text, gbaNote.tone);
     else setLine('bridge-status', blocker ?? 'Ready.');
     renderSession();
 }
@@ -2189,7 +2518,7 @@ function wireUp() {
     $('adapter-bootsel').addEventListener('click', async () => {
         const adapter = state.adapter;
         if (!adapter) return;
-        if (state.bridge) await stopBridge();
+        if (state.bridgePath === 'gba') await stopBridge();
         await adapter.rebootToBootloader();
         await sleep(200);
         await dropAdapter({ code: 'gone', text: 'The adapter is restarting in update mode; an RPI-RP2 drive should appear.' });
@@ -2271,6 +2600,39 @@ function wireUp() {
     $('gift-again').addEventListener('click', () => giftDecide(true));
     $('gift-keep').addEventListener('click', () => giftDecide(false));
     $('gift-sav').addEventListener('change', (event) => onGiftSav(event.target.files?.[0]));
+    $('emu-files').addEventListener('change', (event) => {
+        onEmuFiles(event.target.files);
+        event.target.value = '';
+    });
+    // ROM and save files can be dropped anywhere on the game's card.
+    const emuCard = $('emu-card'), emuDrop = $('emu-drop');
+    for (const name of ['dragenter', 'dragover']) emuCard.addEventListener(name, (event) => { event.preventDefault(); emuDrop.classList.add('over'); });
+    for (const name of ['dragleave', 'drop']) emuCard.addEventListener(name, (event) => { event.preventDefault(); emuDrop.classList.remove('over'); });
+    emuCard.addEventListener('drop', (event) => onEmuFiles(event.dataTransfer?.files));
+    $('emu-sound').addEventListener('click', () => {
+        state.emuMuted = !state.emuMuted;
+        startSound();
+        renderEmu();
+    });
+    $('emu-full').addEventListener('click', () => setEmuFull(!state.emuFull));
+    document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement && state.emuFull) setEmuFull(false); });
+    document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && state.emuFull) setEmuFull(false); });
+    $('emu-save').addEventListener('click', emuDownloadSave);
+    $('emu-load-save').addEventListener('click', (event) => {
+        if (!state.emuUnsaved) $('emu-save-file').click();
+        else twice(event.currentTarget, 'Click again: the save was not downloaded', () => $('emu-save-file').click());
+    });
+    $('emu-save-file').addEventListener('change', async (event) => {
+        const file = event.target.files?.[0];
+        event.target.value = '';
+        if (file) await emuLoadSave(file);
+        renderEmu();
+    });
+    $('emu-reset').addEventListener('click', (event) => twice(event.currentTarget, 'Click again to switch the game off and on', () => state.emu?.emulator.reset()));
+    $('emu-change').addEventListener('click', emuChangeGame);
+    $('emu-link-start').addEventListener('click', onEmuLinkStart);
+    $('emu-link-stop').addEventListener('click', () => stopBridge());
+    $('emu-bypass').addEventListener('change', (event) => setBypass(event.target.checked));
     $('bridge-start').addEventListener('click', onBridgeStart);
     $('bridge-stop').addEventListener('click', () => stopBridge());
     $('wiring-check').addEventListener('click', onWiringCheck);
@@ -2299,7 +2661,9 @@ function wireUp() {
 
     navigator.usb?.addEventListener('connect', onUsbConnect);
     // Release the adapter port if the page closes while bridging.
-    window.addEventListener('pagehide', () => { if (state.bridge) state.bridge.stop(); state.celio?.leave(); state.gift?.stop(); });
+    window.addEventListener('pagehide', () => { if (state.bridge) state.bridge.stop(); state.celio?.leave(); state.gift?.stop(); state.emu?.emulator.checkSave(); });
+    // The emulator's save is kept now rather than at its next check, as the tab may not come back.
+    document.addEventListener('visibilitychange', () => { if (document.hidden) state.emu?.emulator.checkSave(); });
 }
 
 async function start() {
@@ -2312,6 +2676,7 @@ async function start() {
     state.celioServer = remembered(CELIO_STORE) ?? CELIO_SERVER;
     state.giftEvent = remembered(GIFT_STORE);
     state.poolServer = remembered(SERVER_STORE) || POOL_SERVER;
+    state.emuKept = await gameStore.list();
     loadKept();
     const serial = EspDevice.available();
     if (!serial || !window.isSecureContext) {

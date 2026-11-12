@@ -9,7 +9,6 @@ ESP32-S3 and the ESP32-C6.
 | `components/rfu_adapter` | The adapter: the GB-Link firmware's protocol core (`rfuProtocol.hpp`) and the ESP32 side of the link port. The core differs from the firmware's in one way: it resets its state in place, so the GBA's word interrupt never needs a large stack. |
 | `adapter/` | A board that is only the adapter. It speaks the GB-Link's UART protocol, so it takes the GB-Link's place next to a bridge board running the normal firmware. |
 | `bridge/` | The Switch bridge with the adapter on the same chip: one board between the GBA and the Switch. |
-| `test/` | Tests that run on a PC. |
 
 ## How it works
 
@@ -50,14 +49,15 @@ GBA samples it, and finds where the received word starts.
 ## Wiring
 
 Count the pins at the plug that goes into the GBA. A link cable crosses SO and SI
-between its two ends.
+between its two ends. The S3 and C6 columns are for Seeed XIAO boards, which put the same
+pins in the same places.
 
-| GBA link port | Line | ESP32 | ESP32-S3 | ESP32-C6 |
+| GBA link port | Line | ESP32 | XIAO ESP32-S3 | XIAO ESP32-C6 |
 |---|---|---|---|---|
-| 2 | SO, the GBA's output | GPIO19 | GPIO6 | GPIO20 |
-| 3 | SI, the GBA's input | GPIO21 | GPIO7 | GPIO18 |
-| 4 | SD, the GBA's reset line | GPIO22 | GPIO8 | GPIO21 |
-| 5 | SC, the clock | GPIO18 | GPIO5 | GPIO19 |
+| 2 | SO, the GBA's output | GPIO19 | D2 (GPIO3) | D2 (GPIO2) |
+| 3 | SI, the GBA's input | GPIO21 | D1 (GPIO2) | D1 (GPIO1) |
+| 4 | SD, the GBA's reset line | GPIO22 | D3 (GPIO4) | D3 (GPIO21) |
+| 5 | SC, the clock | GPIO18 | D0 (GPIO1) | D0 (GPIO0) |
 | 6 | GND | GND | GND | GND |
 
 - Do not power the board from pin 1 (the GBA's 3.3 V). The board runs from its own USB.
@@ -72,7 +72,8 @@ between its two ends.
 - A 100 to 220 Ω resistor in series with SI and with SC (the two lines the board
   drives) is optional protection.
 - Other pins: `menuconfig`, "GBA wireless adapter". Any output-capable GPIO works.
-  Avoid strapping pins, the flash and PSRAM pins, and the USB pins.
+  Avoid strapping pins, the flash and PSRAM pins, and the USB pins. Other S3 and C6
+  boards, such as an AtomS3, set their pins there.
 
 ## Two boards: the adapter in place of a GB-Link
 
@@ -82,9 +83,12 @@ The chips can differ, for example a C6 adapter next to an S3 bridge.
 
 | Adapter board | Bridge board |
 |---|---|
-| TX: GPIO17 (ESP32), GPIO2 (S3, C6) | RX: GPIO16 (ESP32), GPIO1 (S3, C6) |
-| RX: GPIO16 (ESP32), GPIO1 (S3, C6) | TX: GPIO17 (ESP32), GPIO2 (S3, C6) |
+| TX: GPIO17 (ESP32), D8 (XIAO S3, C6) | RX: GPIO16 (ESP32), GPIO1 (S3, C6) |
+| RX: GPIO16 (ESP32), D9 (XIAO S3, C6) | TX: GPIO17 (ESP32), GPIO2 (S3, C6) |
 | GND | GND |
+
+On a XIAO the adapter's UART sits where a GB-Link's does (D8 for GP8, D9 for GP9), so a
+XIAO running the one-board bridge also takes it as its GB-Link: D8 to D8, D9 to D9.
 
 The adapter runs from power-up and keeps running when the bridge board restarts.
 During play the adapter board only needs power. Opening or closing its console can
@@ -104,12 +108,26 @@ console protocol are the same as for the bridge with a GB-Link. The adapter star
 the board and reports through the same frames a GB-Link sends, so the page's wiring
 check hears it. At boot the console prints the self-test:
 
-    LDN_WA adapter on SC 5 SO 6 SI 7 SD 8, self-test passed: mode 3, ...
+    LDN_WA adapter on SC 0 SO 2 SI 1 SD 21, self-test passed: mode 3, ...
+
+On a XIAO S3 or C6 the one-board bridge also works with a GB-Link. Plug the XIAO into the
+GB-Link's expansion socket, or wire D8 to the GB-Link's GP8, D9 to its GP9 and GND to GND.
+At power-up the board watches D8 for up to a second: a GB-Link's UART output rests high
+there. If it finds one, the GB-Link is the adapter and drives the GBA, the board leaves its
+own adapter pins alone, and the console prints `LDN_WA GB-Link on RX ... TX ...`.
+Otherwise the adapter runs on the board's own pins. Power the GB-Link first, or both
+together. A board whose GB-Link pins are set to adapter pins does not look for one. To use
+the board's own USB as well (its console, or the page), plug that in first, then the
+GB-Link, then press the board's reset button: a computer may not see a board that the
+GB-Link already powers, and the board looks for a GB-Link only at power-up.
 
 The board looks for a Switch's room only while the GBA's player looks for a group (JOIN
 GROUP at the Direct Corner, or in the Union Room), and leaves a room again when the player
 stops looking without joining it. A board whose GBA is doing something else stays out of
-other rooms, so it never takes a place meant for a Switch.
+other rooms, so it never takes a place meant for a Switch. With a GB-Link this needs
+GB-Link firmware that reports when the GBA looks for a group; with older GB-Link firmware
+the board joins a FireRed room as soon as it finds one. A game in the web page's emulator
+reports its searches too.
 
 After every session and every failed join the bridge starts over without restarting
 the chip. The adapter keeps its state, so a GBA between links, in the Union Room or
@@ -176,14 +194,4 @@ Each app and chip builds in its own `build-<app>-<chip>` folder. For menuconfig,
 | `WA_TASK_PRIORITY` | 15 | |
 | `WA_TASK_CORE` | 1 | Dual-core chips: the core for the adapter task and its interrupts, away from Wi-Fi. |
 | `GB_LINK_TX_GPIO`, `GB_LINK_RX_GPIO` | see Two boards | `adapter/` only. |
-
-## Tests
-
-- `test/link/run.sh`: the one-board link against a scripted adapter. It checks when
-  SetMode reaches the adapter, the frames in both directions, and the page's adapter
-  port.
-- `test/run.sh`: the adapter against a simulated GBA running the game's own link
-  library, under a spread of timings and faults (slow interrupts, a corrupted bit, a
-  spike on SC, a reset mid-delivery, interrupts held off, a mode entry after a session),
-  and leading a group.
-  The script's header says what it needs.
+| `PICO_LINK_TX_GPIO`, `PICO_LINK_RX_GPIO` | D9 and D8 on a XIAO | `bridge/` only, under "LDN bridge": where a GB-Link's GP9 and GP8 are wired. |
