@@ -27,7 +27,6 @@ static uint8_t s_host[6];
 static ip4_addr_t s_ip, s_peers[PEERS_MAX];
 static int64_t s_heartbeat;
 static unsigned s_tx, s_rx, s_rejected;
-static unsigned s_rx_rejected;   /* temporary */
 static bool s_host_mode;
 
 typedef struct {
@@ -260,8 +259,6 @@ bool ldn_udp_send(const char *ip, const uint8_t *data, size_t length)
     return ok;
 }
 
-unsigned ldn_udp_rx_rejected(void) { return s_rx_rejected; }
-
 void ldn_udp_poll(bool connected)
 {
     if (s_socket < 0) return;
@@ -288,7 +285,7 @@ void ldn_udp_poll(bool connected)
         }
         bool known = false;
         for (int i = 0; i < PEERS_MAX; ++i) known |= s_peers[i].addr == source.sin_addr.s_addr;
-        if (n > PAYLOAD_MAX || source.sin_port != htons(PIA_PORT) || !known) { ++s_rejected; ++s_rx_rejected; continue; }
+        if (n > PAYLOAD_MAX || source.sin_port != htons(PIA_PORT) || !known) { ++s_rejected; continue; }
         ++s_rx;
         if (s_handler) { s_handler(inet_ntoa(source.sin_addr), bytes, (size_t)n); continue; }
         for (int i = 0; i < n; ++i) { hex[2 * i] = digits[bytes[i] >> 4]; hex[2 * i + 1] = digits[bytes[i] & 15]; }

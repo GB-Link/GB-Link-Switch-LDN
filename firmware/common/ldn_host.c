@@ -264,7 +264,6 @@ static struct
     void (*left)(const ldn_host_member_t *);
     QueueHandle_t rx, relay;
     uint32_t relayed;
-    uint32_t relay_big, relay_full, relay_largest;   /* temporary */
     int64_t joined_ms, next_probe_ms;
 } s_host;
 
@@ -470,14 +469,12 @@ static esp_err_t host_ap_rx(void *buffer, uint16_t length, void *eb)
     {
         /* For another station: the poll loop checks it is one and sends it on. */
         QueueHandle_t relay = s_host.relay;
-        if (length > s_host.relay_largest) s_host.relay_largest = length;
-        if (length > HOST_RELAY_MAX) ++s_host.relay_big;
-        else if (relay)
+        if (length <= HOST_RELAY_MAX && relay)
         {
             relay_frame_t frame;
             frame.len = length;
             memcpy(frame.bytes, bytes, length);
-            if (xQueueSend(relay, &frame, 0) != pdTRUE) ++s_host.relay_full;
+            xQueueSend(relay, &frame, 0);
         }
         esp_wifi_internal_free_rx_buffer(eb);
         return ESP_OK;
@@ -655,7 +652,6 @@ bool ldn_host_start(const ldn_host_config_t *cfg, ldn_host_scratch_t *scratch)
     if (!s_host.rx || !s_host.relay) return host_start_failed("NO_MEMORY");
     xQueueReset(s_host.rx);
     s_host.relayed = 0;
-    s_host.relay_big = s_host.relay_full = s_host.relay_largest = 0;
     portENTER_CRITICAL(&s_lock);
     s_join_n = s_leave_n = 0;
     portEXIT_CRITICAL(&s_lock);
@@ -835,12 +831,6 @@ int ldn_host_listen_away(unsigned channel, unsigned ms)
 
 int ldn_host_member_count(void) { return s_host.station_count; }
 uint32_t ldn_host_relayed(void) { return s_host.relayed; }
-void ldn_host_relay_counts(uint32_t *big, uint32_t *full, uint32_t *largest)
-{
-    *big = s_host.relay_big;
-    *full = s_host.relay_full;
-    *largest = s_host.relay_largest;
-}
 
 const ldn_host_member_t *ldn_host_member(int i)
 {

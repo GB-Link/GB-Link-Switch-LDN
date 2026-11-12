@@ -106,6 +106,11 @@ check hears it. At boot the console prints the self-test:
 
     LDN_WA adapter on SC 5 SO 6 SI 7 SD 8, self-test passed: mode 3, ...
 
+The board looks for a Switch's room only while the GBA's player looks for a group (JOIN
+GROUP at the Direct Corner, or in the Union Room), and leaves a room again when the player
+stops looking without joining it. A board whose GBA is doing something else stays out of
+other rooms, so it never takes a place meant for a Switch.
+
 After every session and every failed join the bridge starts over without restarting
 the chip. The adapter keeps its state, so a GBA between links, in the Union Room or
 back at the counter, carries on. A link still open at that moment ends as if the
@@ -179,5 +184,6 @@ Each app and chip builds in its own `build-<app>-<chip>` folder. For menuconfig,
   port.
 - `test/run.sh`: the adapter against a simulated GBA running the game's own link
   library, under a spread of timings and faults (slow interrupts, a corrupted bit, a
-  spike on SC, a reset mid-delivery, interrupts held off, a mode entry after a session).
+  spike on SC, a reset mid-delivery, interrupts held off, a mode entry after a session),
+  and leading a group.
   The script's header says what it needs.

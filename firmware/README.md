@@ -70,8 +70,8 @@ LDN_KEYS
   connected, so a board that is just plugged into a PC stays out of the way.
 - **Switch leads:** the board joins the Switch's room and shows it to the GBA as a
   wireless group.
-- **GBA leads:** the board hosts a room that looks like a Switch's, and the Switch
-  joins it.
+- **GBA leads:** the board hosts a room that looks like a Switch's, and the Switches
+  join it: one for a trade or a two-player battle, up to three for a multi battle.
 - The link between the two games is lockstep and the wireless adds lag, so
   `trade_shim.c` smooths over the differences: the Switch version runs one extra
   standby step after a trade, lost messages are resent, and old d-pad reports are

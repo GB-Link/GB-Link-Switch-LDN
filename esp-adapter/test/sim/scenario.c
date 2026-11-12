@@ -300,6 +300,85 @@ void gba_sd_chatter(void)
     finish_run();
 }
 
+static void client_data(uint16_t devid, unsigned slot, const uint8_t *bytes, uint8_t length)
+{
+    uint8_t f[104] = {'R', 'F', 'U', '1'};
+    put_be32(f + 4, 6);
+    put_be32(f + 8, (uint32_t)devid | (uint32_t)slot << 16 | (uint32_t)length << 24);
+    memcpy(f + 12, bytes, length);
+    sim_net_feed(f, sizeof(f));
+}
+
+/* The GBA leads a group. Each wait for its client ends as soon as the client's frame for
+   the round is in, an all-zero one included, which is not delivered; the read then takes
+   the client's next queued frame. */
+void gba_host_rounds(void)
+{
+    STWI_init_all(&s_intr, sim_vector_slot(7), FALSE);
+    STWI_init_timer(sim_vector_slot(6), 3);
+    STWI_set_Callback_M(cb_m);
+    STWI_set_Callback_S(cb_s);
+    REG_IME = 1;
+    if (!checkid()) return;
+    RUN("reset", ID_RESET_REQ, STWI_send_ResetREQ());
+    RUN("system config", ID_SYSTEM_CONFIG_REQ, STWI_send_SystemConfigREQ(0x003C, 0x08, 0x20));
+    static const u8 serial[16] = {0x02, 0x00, 'F', 'I', 'R', 'E', 'R', 'E', 'D', 0, 0, 0, 0, 0, 0, 0};
+    static const u8 uname[8] = {'R', 'E', 'D', 0, 0, 0, 0, 0};
+    RUN("game config", ID_GAME_CONFIG_REQ, STWI_send_GameConfigREQ(serial, uname));
+    RUN("host start", ID_SC_START_REQ, STWI_send_SC_StartREQ());
+
+    /* A client's connect, routed by the relay; the adapter answers with its slot. */
+    net_command(1, 0);
+    wait_us(2000);
+    uint8_t ack[16] = {0};
+    CHECK(sim_net_last(2, ack, sizeof(ack)) == 16, "no CONNECT_ACK for the client");
+    const uint32_t h = (uint32_t)ack[8] << 24 | (uint32_t)ack[9] << 16 | (uint32_t)ack[10] << 8 | ack[11];
+    const uint16_t devid = (uint16_t)(h & 0xFFFF);
+    const unsigned slot = (h >> 16) & 3;
+    if (RUN("host poll", ID_SC_POLL_REQ, STWI_send_SC_PollingREQ()))
+        CHECK((reply(1) & 0xFFFF) == devid, "host poll lists %08lx, the client is %04x", (unsigned long)reply(1), devid);
+
+    for (int round = 0; round < 8; round++)
+    {
+        const u32 mine[5] = {14u, 0x01020304u + (u32)round, 0x05060708, 0x090A0B0C, 0x0D0E0000};
+        RUN("host send", ID_DATA_TX_REQ, STWI_send_DataTxREQ(mine, sizeof(mine)));
+        const int idle = round % 3 != 2;
+        uint8_t child[14] = {0};
+        if (!idle)
+        {
+            child[0] = 0x55;
+            for (int i = 1; i < 14; i++) child[i] = (uint8_t)(round * 7 + i);
+        }
+        client_data(devid, slot, child, sizeof(child));
+        wait_us(500);
+        const int took = wait_event("host wait", ID_DATA_READY_AND_CHANGE_REQ, 200000);
+        CHECK(took >= 0 && took < 6000, "round %d (%s): the wait took %d us", round, idle ? "idle" : "data", took);
+        if (RUN("host read", ID_DATA_RX_REQ, STWI_send_DataRxREQ()))
+        {
+            const unsigned got = (reply(1) >> (8 + slot * 5)) & 0x1F;
+            CHECK(got == (idle ? 0u : 14u), "round %d (%s): read %u bytes", round, idle ? "idle" : "data", got);
+            if (!idle && got == 14)
+            {
+                uint8_t back[16];
+                memcpy(back, &((u32 *)gSTWIStatus->rxPacket)[2], 16);
+                CHECK(memcmp(back, child, 14) == 0, "round %d: the client's bytes differ", round);
+            }
+        }
+    }
+    /* No frame from the client: the wait ends with the retransmission window. */
+    const u32 last[5] = {14u, 0xAABBCCDD, 0, 0, 0};
+    RUN("host send", ID_DATA_TX_REQ, STWI_send_DataTxREQ(last, sizeof(last)));
+    s_event = -1;
+    if (RUN("host wait, client silent", ID_MS_CHANGE_REQ, STWI_send_MS_ChangeREQ()))
+    {
+        const uint64_t start = sim_now_us();
+        while (s_event < 0 && sim_now_us() - start < 200000) sim_gba_cycles(300);
+        const int took = (int)(sim_now_us() - start);
+        CHECK(s_event >= 0 && took >= 9000, "a wait with nothing from the client: event %x after %d us", s_event, took);
+    }
+    finish_run();
+}
+
 /* The game keeps interrupts off for 5 ms (a flash save) while words are in flight, in
    both directions. */
 void gba_interrupts_held(void)

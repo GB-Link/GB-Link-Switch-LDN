@@ -636,7 +636,7 @@ static void print_session_summary(void)
     {
         const pia_link_t *l = &g.s.link;
         dg_in = l->received; dg_out = l->sent; skipped = g.switch_skipped;
-        shed = l->shed; dropped = l->overflow; resends = -1;
+        shed = l->shed; dropped = l->overflow; resends = l->resends;
     }
     uint8_t queue_high = 0, sheds = 0;
     uint16_t queue_drops = 0, overflows = 0;
@@ -991,45 +991,6 @@ static void restart_in_place(void)
 
 bool pia_bridge_running(void) { return g.started; }
 bool pia_bridge_in_session(void) { return g.started && (g.state == BR_RUN || g.state == BR_HOST); }
-
-/* Temporary: each station's flow per second, every 2 s while hosting. */
-static void print_host_flow(int64_t now)
-{
-    static int64_t next_ms, last_ms;
-    static int prev[PIA_HOST_STATIONS][7], prev_gba_in, prev_gba_out;
-    if (now < next_ms) return;
-    const int64_t span = last_ms ? now - last_ms : 2000;
-    next_ms = now + 2000;
-    last_ms = now;
-    const int ms = span > 0 ? (int)span : 2000;
-    uint32_t big, full, largest;
-    ldn_host_relay_counts(&big, &full, &largest);
-    printf("LDN_BRIDGE FLOW gba from %d/s to %d/s, relayed %u (too big %u, queue full %u, largest %u), "
-           "udp refused %u, unknown source %d\n",
-           (g.frames_from_gba - prev_gba_in) * 1000 / ms, (g.frames_to_gba - prev_gba_out) * 1000 / ms,
-           (unsigned)ldn_host_relayed(), (unsigned)big, (unsigned)full, (unsigned)largest, ldn_udp_rx_rejected(),
-           g.host->rx_wrong_source);
-    prev_gba_in = g.frames_from_gba;
-    prev_gba_out = g.frames_to_gba;
-    for (int i = 0; i < PIA_HOST_STATIONS; ++i)
-    {
-        const pia_host_station_t *st = &g.host->st[i];
-        const int now_v[7] = {st->received, st->sent, st->child_frames, st->parent_frames, st->parent_dropped,
-                              st->shed, st->resends};
-        if (st->state != 0)
-            printf("LDN_BRIDGE FLOW m%u c%d in %d out %d child %d parent %d /s, drop +%d shed +%d resend +%d, "
-                   "queue %d pend %d cred %d rto %d, dec %d unzip %d bad %d hold %d next %04x, "
-                   "pid gaps %u nonce skips %u other dst %u cut %u\n",
-                   st->index, g.client[i].connected ? g.client[i].slot : -1, (now_v[0] - prev[i][0]) * 1000 / ms,
-                   (now_v[1] - prev[i][1]) * 1000 / ms, (now_v[2] - prev[i][2]) * 1000 / ms,
-                   (now_v[3] - prev[i][3]) * 1000 / ms, now_v[4] - prev[i][4], now_v[5] - prev[i][5],
-                   now_v[6] - prev[i][6], st->parent_count, pia_reliable_pending(&st->reliable), st->credits,
-                   (int)pia_reliable_rto(&st->reliable), st->decrypt_failures, st->rx_unzip_fail, st->rx_bad_frame,
-                   st->hold_dropped, st->next_deliver & 0xffff, (unsigned)st->trace.pid_gaps,
-                   (unsigned)st->trace.nonce_skips, (unsigned)st->trace.dst_other, (unsigned)st->trace.cut);
-        memcpy(prev[i], now_v, sizeof(now_v));
-    }
-}
 
 /* Logged once per stall of a station's stream. */
 static void check_host_stall(int64_t now, int station)
@@ -1644,7 +1605,6 @@ void pia_bridge_poll(void)
                 printf("LDN_BRIDGE Switch asks to join the group: connecting it to the GBA\n");
             }
         }
-        if (pia_host_station_count(g.host) > 0) print_host_flow(now);
         int64_t closing = 0;
         for (int i = 0; i < PIA_HOST_STATIONS; ++i)
         {

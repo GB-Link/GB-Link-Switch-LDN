@@ -27,6 +27,8 @@
    stalls between frames. While the child is quiet only INFLIGHT_MAX applies. */
 #define CREDIT_CAP 6
 #define CHILD_QUIET_MS 250
+/* A gap in a station's stream is given up after this long: its frame is not coming. */
+#define GAP_GIVE_UP_MS 300
 
 
 /* Per-console value in the host's station record; the same in every captured session. */
@@ -484,21 +486,6 @@ static void send_frames(pia_host_t *h, pia_host_station_t *s, pia_packet_t *fram
     if (count < MAX_FRAMES && (s->ack_owed || pia_reliable_has_gap(&s->reliable)))
     {
         pia_reliable_ack(&s->reliable, ack);
-        if (h->now_ms < s->trace.until_ms && s->trace.lines < 200)
-        {
-            const uint16_t next = bin_b16(ack + 2);
-            const uint32_t bits = bin_b32(ack + 4);
-            if (next != s->trace.ack_next || bits != s->trace.ack_bits)
-            {
-                char line[80];
-                snprintf(line, sizeof(line), "TRACE m%u ack %04x bits %08x ooo %d", s->index, next, (unsigned)bits,
-                         s->reliable.ooo_count);
-                emit(h, line);
-                ++s->trace.lines;
-                s->trace.ack_next = next;
-                s->trace.ack_bits = bits;
-            }
-        }
         frames[count].seq = 0xfff0; frames[count].flags = 0; frames[count].data = ack; frames[count].length = 20;
         ++count;
         s->ack_owed = false;
@@ -615,53 +602,68 @@ static void feed(pia_host_t *h, pia_host_station_t *s, const uint8_t *p, size_t 
     else if (p[1] == 0x4b && len >= 16) take_wk(h, s, bin_u32(p + 12));
 }
 
-/* Temporary: a held frame dropped, at most 4 notes a second per station. */
-static void hold_note(pia_host_t *h, pia_host_station_t *s, uint16_t seq, uint16_t next, size_t len, const char *why)
+static int held_count(const pia_host_station_t *s)
 {
-    if (h->now_ms - s->hold_note_ms >= 1000) { s->hold_note_ms = h->now_ms; s->hold_notes = 0; }
-    if (++s->hold_notes > 4) return;
     int held = 0;
     for (int i = 0; i < PIA_HOST_HOLD_SLOTS; ++i) held += s->hold[i].used;
+    return held;
+}
+
+/* Held frames that follow on from `next`, in order. Returns the new next. */
+static uint16_t release_held(pia_host_t *h, pia_host_station_t *s, uint16_t next)
+{
+    for (bool again = true; again;)
+    {
+        again = false;
+        for (int i = 0; i < PIA_HOST_HOLD_SLOTS; ++i)
+            if (s->hold[i].used && s->hold[i].seq == next)
+            {
+                s->hold[i].used = false;
+                feed(h, s, s->hold[i].data, s->hold[i].length);
+                next = (uint16_t)(next + 1);
+                again = true;
+                break;
+            }
+    }
+    return next;
+}
+
+/* The frames missing before the first held one are given up: acknowledged as if they had
+   arrived, so the station's window moves on, and the held frames after them delivered. */
+static void give_up_gap(pia_host_t *h, pia_host_station_t *s)
+{
+    int lowest = -1;
+    for (int i = 0; i < PIA_HOST_HOLD_SLOTS; ++i)
+        if (s->hold[i].used && (lowest < 0 || bin_less(s->hold[i].seq, (uint16_t)lowest))) lowest = s->hold[i].seq;
+    if (lowest < 0 || s->next_deliver < 0) return;
+    const uint16_t from = (uint16_t)s->next_deliver, to = (uint16_t)lowest;
+    for (uint16_t q = from; q != to; ++q) pia_reliable_receive(&s->reliable, q, q);
     char line[96];
-    snprintf(line, sizeof(line), "HOLD m%u seq %04x next %04x len %u held %d %s", s->index, seq, next, (unsigned)len,
-             held, why);
+    if ((uint16_t)(to - from) == 1)
+        snprintf(line, sizeof(line), "Switch %u did not resend frame %04x: going on without it", s->index, from);
+    else
+        snprintf(line, sizeof(line), "Switch %u did not resend frames %04x-%04x: going on without them", s->index, from,
+                 (uint16_t)(to - 1));
     emit(h, line);
+    ++s->gaps_given_up;
+    s->next_deliver = release_held(h, s, to);
+    s->gap_since_ms = h->now_ms;
 }
 
 /* Pia retransmits out of order, but the games need their +1 mod 8 sequence, so child
-   frames are delivered in order. A frame with no room to wait is left unacked and resent. */
+   frames are delivered in order. A Switch station does not resend a frame lost on the way
+   here (its window stays at the frame while newer ones keep coming), so a gap is waited for
+   only briefly, and not at all once the hold is full. */
 static void resequence(pia_host_t *h, pia_host_station_t *s, uint16_t seq, uint16_t low, const uint8_t *inner, size_t len)
 {
-    if (s->next_deliver < 0) { s->next_deliver = low; s->trace.moved_ms = h->now_ms; }
+    if (s->next_deliver < 0) s->next_deliver = low;
     uint16_t next = (uint16_t)s->next_deliver;
     if (seq == next)
     {
-        if (s->trace.stuck)
-        {
-            char line[80];
-            snprintf(line, sizeof(line), "TRACE m%u moved on after %d ms with %04x (low %04x)", s->index,
-                     (int)(h->now_ms - s->trace.moved_ms), seq, low);
-            emit(h, line);
-            s->trace.stuck = false;
-        }
-        s->trace.moved_ms = h->now_ms;
         pia_reliable_receive(&s->reliable, seq, low);
         feed(h, s, inner, len);
-        next = (uint16_t)(next + 1);
-        for (bool again = true; again;)
-        {
-            again = false;
-            for (int i = 0; i < PIA_HOST_HOLD_SLOTS; ++i)
-                if (s->hold[i].used && s->hold[i].seq == next)
-                {
-                    s->hold[i].used = false;
-                    feed(h, s, s->hold[i].data, s->hold[i].length);
-                    next = (uint16_t)(next + 1);
-                    again = true;
-                    break;
-                }
-        }
-        s->next_deliver = next;
+        s->next_deliver = release_held(h, s, (uint16_t)(next + 1));
+        s->gap_since_ms = h->now_ms;
         return;
     }
     if (!bin_less(next, seq) || (uint16_t)(seq - next) >= 4096)
@@ -669,9 +671,17 @@ static void resequence(pia_host_t *h, pia_host_station_t *s, uint16_t seq, uint1
         pia_reliable_receive(&s->reliable, seq, low);    /* a copy of a delivered frame */
         return;
     }
-    if (len > PIA_HOST_HOLD_BYTES) { ++s->hold_dropped; hold_note(h, s, seq, next, len, "too big"); return; }
+    if (len > PIA_HOST_HOLD_BYTES) { ++s->hold_dropped; return; }
     for (int i = 0; i < PIA_HOST_HOLD_SLOTS; ++i)
         if (s->hold[i].used && s->hold[i].seq == seq) return;
+    const int held = held_count(s);
+    if (held == PIA_HOST_HOLD_SLOTS)
+    {
+        give_up_gap(h, s);
+        resequence(h, s, seq, low, inner, len);
+        return;
+    }
+    if (held == 0) s->gap_since_ms = h->now_ms;
     for (int i = 0; i < PIA_HOST_HOLD_SLOTS; ++i)
         if (!s->hold[i].used)
         {
@@ -682,8 +692,11 @@ static void resequence(pia_host_t *h, pia_host_station_t *s, uint16_t seq, uint1
             pia_reliable_receive(&s->reliable, seq, low);
             return;
         }
-    ++s->hold_dropped;
-    hold_note(h, s, seq, next, len, "full");
+}
+
+static void check_gap(pia_host_t *h, pia_host_station_t *s)
+{
+    if (s->next_deliver >= 0 && h->now_ms - s->gap_since_ms >= GAP_GIVE_UP_MS && held_count(s) > 0) give_up_gap(h, s);
 }
 
 static void on_reliable(pia_host_t *h, pia_host_station_t *s, const uint8_t *p, size_t len)
@@ -697,13 +710,6 @@ static void on_reliable(pia_host_t *h, pia_host_station_t *s, const uint8_t *p, 
         return;
     }
     s->ack_owed = true;
-    s->trace.ring[s->trace.head].seq = seq;
-    s->trace.ring[s->trace.head].low = low;
-    s->trace.ring[s->trace.head].flags = p[0];
-    s->trace.ring[s->trace.head].len = inner_len > 255 ? 255 : (uint8_t)inner_len;
-    s->trace.ring[s->trace.head].type = inner_len >= 2 && inner[0] == 0x57 ? inner[1] : '?';
-    s->trace.ring[s->trace.head].pid = (uint8_t)s->trace.pid[1];
-    s->trace.head = (uint8_t)((s->trace.head + 1) % 32);
     resequence(h, s, seq, low, inner, inner_len);
 }
 
@@ -786,94 +792,6 @@ static void dispatch(pia_host_t *h, pia_host_station_t *s, const pia_message_t *
     }
 }
 
-/* Temporary: a station's datagram numbering and addressing, and a line per datagram while
-   its stream is traced. */
-static char trace_line[256];
-
-static char *trace_begin(pia_host_t *h, pia_host_station_t *s, const uint8_t *data, size_t length)
-{
-    const uint16_t dst = bin_b16(data + 6), pid = bin_b16(data + 10);
-    const uint64_t nonce = bin_b64(data + 13);
-    const int k = dst == 1 ? 0 : 1;
-    int pid_step = 0;
-    if (dst != 0)
-    {
-        pid_step = s->trace.pid_valid[k] ? (int)(uint16_t)(pid - s->trace.pid[k]) : 1;
-        if (k == 1 && s->trace.pid_valid[k] && pid_step > 1 && pid_step < 1000)
-            s->trace.pid_gaps += (uint32_t)(pid_step - 1);
-        s->trace.pid[k] = pid;
-        s->trace.pid_valid[k] = true;
-    }
-    int nonce_step = 1;
-    if (s->trace.nonce_valid)
-    {
-        const int64_t d = (int64_t)(nonce - s->trace.nonce);
-        nonce_step = d > 99999 ? 99999 : d < -99999 ? -99999 : (int)d;
-        if (nonce_step > 1) s->trace.nonce_skips += (uint32_t)(nonce_step - 1);
-    }
-    s->trace.nonce = nonce;
-    s->trace.nonce_valid = true;
-    if (dst != h->our_id && dst != 0 && dst != 1) { ++s->trace.dst_other; s->trace.dst_last = dst; }
-    if (h->now_ms >= s->trace.until_ms || s->trace.lines >= 200) return NULL;
-    ++s->trace.lines;
-    snprintf(trace_line, sizeof(trace_line), "TRACE m%u +%d pid %04x%+d n%+d dst %04x len %u:", s->index,
-             (int)(h->now_ms - s->trace.moved_ms), pid, pid_step, nonce_step, dst, (unsigned)length);
-    return trace_line;
-}
-
-static void trace_token(char *line, const pia_message_t *m)
-{
-    const size_t at = strlen(line);
-    if (at + 28 > sizeof(trace_line)) return;
-    char *o = line + at;
-    const size_t room = sizeof(trace_line) - at;
-    const uint8_t *p = m->payload;
-    if (m->protocol == 10 && m->length >= 8 && (p[0] & 1))
-        snprintf(o, room, " D%04x/%04x.%x.%u%c", bin_b16(p + 3), bin_b16(p + 5), p[0], bin_b16(p + 1),
-                 m->length >= 10 && p[8] == 0x57 ? p[9] : '?');
-    else if (m->protocol == 10 && m->length >= 16)
-        snprintf(o, room, " A%04x.%02x%02x%02x%02x", bin_b16(p + 10), p[12], p[13], p[14], p[15]);
-    else
-        snprintf(o, room, " P%u.%u.%u", m->protocol, m->length ? p[0] : 0, m->length);
-}
-
-/* Start a trace of a station whose in-order point has not moved for 250 ms with frames held. */
-static void trace_check(pia_host_t *h, pia_host_station_t *s)
-{
-    if (s->state != 3 || s->next_deliver < 0 || s->trace.stuck || h->traces >= 4) return;
-    if (h->now_ms < h->trace_armed_ms || h->now_ms - s->trace.moved_ms < 250) return;
-    int held = 0;
-    for (int i = 0; i < PIA_HOST_HOLD_SLOTS; ++i) held += s->hold[i].used;
-    if (held == 0) return;
-    ++h->traces;
-    s->trace.stuck = true;
-    s->trace.until_ms = h->now_ms + 3000;
-    s->trace.lines = 0;
-    s->trace.ack_next = 0;
-    s->trace.ack_bits = 0;
-    h->trace_armed_ms = h->now_ms + 8000;
-    char line[200];
-    snprintf(line, sizeof(line),
-             "TRACE m%u stuck at %04x for %d ms: held %d, ack next %04x ooo %d, pid gaps %u, nonce skips %u, "
-             "other dst %u (%04x), cut %u",
-             s->index, s->next_deliver & 0xffff, (int)(h->now_ms - s->trace.moved_ms), held, s->reliable.receive_next,
-             s->reliable.ooo_count, (unsigned)s->trace.pid_gaps, (unsigned)s->trace.nonce_skips,
-             (unsigned)s->trace.dst_other, s->trace.dst_last, (unsigned)s->trace.cut);
-    emit(h, line);
-    for (int row = 0; row < 4; ++row)
-    {
-        int at = snprintf(line, sizeof(line), "TRACE m%u had", s->index);
-        for (int k = 0; k < 8; ++k)
-        {
-            const int i = (s->trace.head + row * 8 + k) % 32;
-            const pia_host_trace_entry_t *e = &s->trace.ring[i];
-            at += snprintf(line + at, sizeof(line) - (size_t)at, " %04x/%04x.%x.%u%c.%02x", e->seq, e->low, e->flags,
-                           e->len, e->type ? e->type : '-', e->pid);
-        }
-        emit(h, line);
-    }
-}
-
 void pia_host_receive(pia_host_t *h, const uint8_t *data, size_t length, const char *source)
 {
     pia_host_station_t *s = station_by_ip(h, source);
@@ -883,7 +801,6 @@ void pia_host_receive(pia_host_t *h, const uint8_t *data, size_t length, const c
     uint8_t *plain = sc->plain, *app = sc->app;
     int n = pia_decrypt(&h->crypto, data, length, source, plain, sizeof(sc->plain));
     if (n < 0) { ++s->decrypt_failures; return; }
-    char *tl = trace_begin(h, s, data, length);
     int padding = data[5] >> 4, footer = data[12];
     if (padding + footer > n) { ++s->rx_bad_frame; return; }
     n -= padding + footer;
@@ -903,12 +820,9 @@ void pia_host_receive(pia_host_t *h, const uint8_t *data, size_t length, const c
     while (pia_message_next(&it, &message))
     {
         ++s->rx_messages;
-        if (tl) trace_token(tl, &message);
         dispatch(h, s, &message, src);
         if (s->state == 0) return;
     }
-    if (it.pos < it.len) ++s->trace.cut;
-    if (tl) emit(h, tl);
     ++s->received;
     if (s->credits < h->credit_cap) ++s->credits;
     s->last_child_datagram_ms = h->now_ms;
@@ -1059,7 +973,6 @@ static void clear_station(pia_host_t *h, pia_host_station_t *s)
     memset(s->wt_ring, 0, sizeof(s->wt_ring));
     memset(s->probes, 0, sizeof(s->probes));
     memset(s->packet_ids, 0, sizeof(s->packet_ids));
-    memset(&s->trace, 0, sizeof(s->trace));
     s->state = 0;
     s->id = 0;
     s->ip[0] = 0;
@@ -1074,6 +987,8 @@ static void clear_station(pia_host_t *h, pia_host_station_t *s)
     s->join_replies = 0;
     s->wg_pending = -1;
     s->next_deliver = -1;
+    s->gap_since_ms = 0;
+    s->gaps_given_up = 0;
     s->wt_ring_head = 0;
     s->teardown = s->teardown_sent = 0;
     s->silent_noted = 0;
@@ -1223,7 +1138,8 @@ void pia_host_tick(pia_host_t *h, int64_t now_ms)
     }
     for (int i = 0; i < PIA_HOST_STATIONS; ++i)
         if (h->st[i].state != 0) station_tick(h, &h->st[i]);
-    for (int i = 0; i < PIA_HOST_STATIONS; ++i) trace_check(h, &h->st[i]);
+    for (int i = 0; i < PIA_HOST_STATIONS; ++i)
+        if (h->st[i].state == 3) check_gap(h, &h->st[i]);
 }
 
 /* ---- the bridge's side ----------------------------------------------------- */

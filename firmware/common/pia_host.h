@@ -49,8 +49,6 @@ typedef void (*pia_host_send_fn)(const uint8_t *datagram, size_t length, const c
 /* A child adapter payload from station `station`: 2-byte LLSF header and one 14-byte slot. */
 typedef void (*pia_host_child_fn)(const uint8_t *payload, size_t length, int station, void *user);
 typedef void (*pia_host_log_fn)(const char *message, void *user);
-/* Temporary: one received data frame, for the stuck-stream trace. */
-typedef struct { uint16_t seq, low; uint8_t flags, len, type, pid; } pia_host_trace_entry_t;
 
 typedef struct
 {
@@ -96,6 +94,8 @@ typedef struct
     /* Child frames are delivered in order; early ones wait here. */
     int next_deliver;                 /* -1 until the child's first frame */
     struct { uint16_t seq; uint8_t data[PIA_HOST_HOLD_BYTES]; uint8_t length; bool used; } hold[PIA_HOST_HOLD_SLOTS];
+    int64_t gap_since_ms;             /* the first held frame has waited since */
+    int gaps_given_up;
     /* Sent WT frames by stamp, for RTT samples from WKs. */
     struct { uint32_t stamp; uint16_t seq; int64_t sent_ms; bool used, idle; } wt_ring[PIA_HOST_WT_RING];
     int wt_ring_head;
@@ -110,22 +110,6 @@ typedef struct
     bool child_stamp_valid;
     int child_skipped;
     uint8_t silent_noted;             /* stations it reported unheard, by station slot */
-    int64_t hold_note_ms;             /* temporary: the hold drop notes' rate limit */
-    int hold_notes;
-    /* Temporary: the station's datagram numbering, and a trace when its stream sticks. */
-    struct
-    {
-        pia_host_trace_entry_t ring[32];
-        uint8_t head;
-        uint16_t pid[2];
-        bool pid_valid[2], nonce_valid, stuck;
-        uint64_t nonce;
-        uint32_t pid_gaps, nonce_skips, dst_other, cut;
-        uint16_t dst_last, ack_next;
-        uint32_t ack_bits;
-        int64_t moved_ms, until_ms;
-        int lines;
-    } trace;
 
     int received, sent, decrypt_failures, child_frames, parent_frames;
     int rx_bad_frame, rx_messages, rx_unzip_fail, resends;
@@ -182,8 +166,6 @@ typedef struct
     /* Data frames a child may have waiting: it must cover the round trip at the GBA's frame
        rate. A group's members are farther away in time (more stations on the air). */
     int credit_cap;
-    int64_t trace_armed_ms;           /* temporary: the next stuck-stream trace may start */
-    int traces;
 } pia_host_t;
 
 void pia_host_init(pia_host_t *h, const uint8_t ssid[16], const uint8_t our_mac[6], const char *our_ip,

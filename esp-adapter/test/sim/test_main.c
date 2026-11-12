@@ -17,6 +17,7 @@ void gba_reset_during_delivery(void);
 void gba_interrupts_held(void);
 void gba_mode_entry(void);
 void gba_sd_chatter(void);
+void gba_host_rounds(void);
 
 typedef struct {
     const char *name;
@@ -84,6 +85,7 @@ int main(int argc, char **argv)
         {"mode entry after a session", {150, 3000, 100, 2000, 2000, 15, 0, 0, 0, 0}, gba_mode_entry, 0},
         {"SD chattering before the game starts", {150, 3000, 100, 2000, 2000, 15, 0, 0, 0, 0}, gba_sd_chatter, 0},
         {"long session", {150, 3000, 400, 3000, 3000, 15, 0, 0, 0, 0}, NULL, 400},
+        {"leading a group: idle and data rounds", {150, 3000, 100, 2000, 2000, 15, 0, 0, 0, 0}, gba_host_rounds, 0},
     };
     int failed = 0;
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)

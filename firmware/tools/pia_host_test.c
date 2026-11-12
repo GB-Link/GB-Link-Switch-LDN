@@ -1190,6 +1190,32 @@ static void run_group(uint32_t seed)
         CHECK_EQ(g_m[j].child_delivered, before + 1);
         CHECK_EQ(g_m[j].child_misrouted, 0);
     }
+
+    /* A Switch station does not resend a frame lost on the way: the frames after it wait
+       briefly, then reach the GBA without it, and the ack moves past it. */
+    {
+        const int j = 2;
+        const int before = g_m[j].child_delivered;
+        const uint16_t lost = g_links[j].reliable.next;
+        g_links[j].reliable.next = (uint16_t)(lost + 1);
+        for (int k = 0; k < 4; ++k) inject_switch_wt(j, child_counter[j]++);
+        CHECK_EQ(g_m[j].child_delivered, before);
+        for (int i = 0; i < 30; ++i) group_step();
+        CHECK_EQ(g_m[j].child_delivered, before + 4);
+        CHECK_EQ(g_m[j].child_misrouted, 0);
+        CHECK_EQ(g_host.st[j].gaps_given_up, 1);
+        CHECK(bin_less(lost, g_host.st[j].reliable.receive_next));
+        printf("  a frame never resent: given up, the %d after it went on\n", g_m[j].child_delivered - before);
+
+        /* More frames behind a gap than the hold takes: given up at once. */
+        const int before_full = g_m[j].child_delivered;
+        g_links[j].reliable.next = (uint16_t)(g_links[j].reliable.next + 1);
+        for (int k = 0; k < PIA_HOST_HOLD_SLOTS + 8; ++k) inject_switch_wt(j, child_counter[j]++);
+        CHECK_EQ(g_m[j].child_delivered, before_full + PIA_HOST_HOLD_SLOTS + 8);
+        CHECK_EQ(g_m[j].child_misrouted, 0);
+        CHECK_EQ(g_host.st[j].gaps_given_up, 2);
+        CHECK_EQ(g_host.st[j].hold_dropped, 0);
+    }
 }
 
 int main(void)

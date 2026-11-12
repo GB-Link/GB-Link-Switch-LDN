@@ -89,6 +89,11 @@ is ready again about ten seconds later.
 It also works the other way round: lead the group on the GBA, then join it from the
 Switch.
 
+Four-player multi battles work the same way, led from either side. A Switch can lead
+with GBAs joining, or a GBA can lead with Switches joining; another GBA joins through its
+own board. With a GBA leading four players the game runs a little slower than with a
+Switch leading.
+
 ### Ruby and Sapphire
 
 Pick *Ruby, Sapphire* in the Play step and press *Start*, with both boards on USB. Lead a

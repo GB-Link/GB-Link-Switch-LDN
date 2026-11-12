@@ -874,14 +874,17 @@ public:
                         // carries meaning (the LL comm=0 close frame is 80 00;
                         // an ack nibble there advances the parent's block
                         // sends).
+                        HostClient& c = m_host.clients[clid];
                         {
                             bool allZero = true;
                             for (uint32_t zi = 0; zi < blen && allZero; zi++)
                                 if (payload[zi]) allZero = false;
                             if (allZero)
+                            {
+                                if (c.idleAnswers < hostShedAt) c.idleAnswers++;
                                 break;
+                            }
                         }
-                        HostClient& c = m_host.clients[clid];
                         if (childHasCommand(payload, blen))
                         {
                             // An unchanged re-send would get a new tag and be
@@ -1097,6 +1100,10 @@ private:
         uint8_t outTag = 0;
         uint8_t last[16] = {};
         uint8_t lastLen = 0;
+        // All-zero frames are not queued, but each answers one of the parent's
+        // frames: a wait for every client counts them, and a read with nothing
+        // queued takes one.
+        uint8_t idleAnswers = 0;
     };
     struct HostState
     {
@@ -1239,16 +1246,16 @@ private:
     }
 
     // A host waits for every client: a group then runs at its slowest member's pace, as on
-    // the cable, instead of the fastest one's while the others' frames pile up. Once the
-    // retransmission window is over, the clients that have data are delivered. One
-    // client: the same as dataAvail.
+    // the cable, instead of the fastest one's while the others' frames pile up. A client
+    // whose frame was all zeros has answered. Once the retransmission window is over, the
+    // clients that have data are delivered.
     bool hostDataReady(uint32_t nowMs) const
     {
         bool any = false, all = true;
         for (const auto& c : m_host.clients)
         {
             if (!c.devid) continue;
-            if (c.pkt.pending()) any = true;
+            if (c.pkt.pending() || c.idleAnswers) any = true;
             else all = false;
         }
         return any && (all || timeReached(nowMs, m_rtxDeadlineMs));
@@ -1982,6 +1989,7 @@ private:
                         if (!c.devid) continue;
                         const uint8_t* p;
                         uint32_t dlen = c.pkt.read(&p);  // one front pop per poll
+                        if (dlen == 0 && c.idleAnswers) c.idleAnswers--;
                         if (dlen > 16) dlen = 16;        // gpsp truncates (rfu.c:496)
                         if (dlen)
                         {
