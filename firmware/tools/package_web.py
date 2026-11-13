@@ -7,7 +7,7 @@ behind, so nothing here knows where a given chip keeps its bootloader.
     package_web.py [--builds DIR] [--adapter-uf2 FILE --adapter-version X.Y.Z]
 
 --builds names a directory holding one build directory per chip (DIR/ESP32-S3, ...);
-the default is each project's own build directory, where tools/build.sh puts it.
+the default is firmware/build/<chip>, where tools/build.sh puts it.
 Without --adapter-uf2 the GB-Link image already in web/firmware/ is kept.
 """
 import argparse, json, re, shutil, sys
@@ -50,7 +50,7 @@ def main():
 
     chips = {}
     for chip in CHIPS:
-        build = (options.builds / chip) if options.builds else (FIRMWARE / chip / "build")
+        build = (options.builds / chip) if options.builds else (FIRMWARE / "build" / chip)
         if not (build / "flasher_args.json").exists():
             sys.exit(f"{chip}: no build found in {build} (run tools/build.sh {chip} first)")
         chips[chip] = package_chip(chip, build)

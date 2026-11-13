@@ -17,10 +17,22 @@ config LDN_PROBE_LEGACY_PHY
     default y
 config PICO_LINK_TX_GPIO
     int "GPIO wired to the GB-Link's GP9 (its UART RX)"
-    default 2
+    default 17 if IDF_TARGET_ESP32
+    default 9 if IDF_TARGET_ESP32C3 || IDF_TARGET_ESP32C5
+    default 20 if IDF_TARGET_ESP32C6
+    default 8 if IDF_TARGET_ESP32S3
+    help
+        D9 on a Seeed Studio XIAO, the pin a GB-Link's expansion socket takes to its GP9.
+        TX2 on an original ESP32 board.
 config PICO_LINK_RX_GPIO
     int "GPIO wired to the GB-Link's GP8 (its UART TX)"
-    default 1
+    default 16 if IDF_TARGET_ESP32
+    default 8 if IDF_TARGET_ESP32C3 || IDF_TARGET_ESP32C5
+    default 19 if IDF_TARGET_ESP32C6
+    default 7 if IDF_TARGET_ESP32S3
+    help
+        D8 on a Seeed Studio XIAO, the pin a GB-Link's expansion socket takes from its GP8.
+        RX2 on an original ESP32 board.
 config PIA_STATIC_ZSTD_CONTEXT
     bool "Reserve the decompression context at link time"
     default y

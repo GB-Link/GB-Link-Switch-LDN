@@ -37,8 +37,10 @@ Emerald on a GBA against FireRed on a Switch. Photos by AngeloftheNight091.
 The Switch's local wireless is a Wi-Fi network. An ESP32 board joins it the way a
 second Switch would. On the GBA side, a [GB-Link](https://github.com/GB-Link/GBLink-Firmware)
 adapter in the link port stands in for the Wireless Adapter. The two boards are
-connected with three wires, or both go on USB and the web page passes the traffic
-between them.
+connected with three wires (a Seeed Studio XIAO board plugs straight into the GB-Link's
+expansion socket), or both go on USB and the web page passes the traffic between them.
+The ESP32 board can also be the Wireless Adapter itself, with the GBA's link port wired
+to it and no GB-Link: see [`firmware/README.md`](firmware/README.md#wired-to-the-gba).
 
 ![Game Boy Advance, link port, GB-Link adapter, three wires or USB through the page, ESP32 board, local wireless, Nintendo Switch running FireRed or LeafGreen](images/how-it-works.svg)
 
@@ -85,9 +87,9 @@ boards.
 2. **GB-Link adapter.** Plug it in and install the firmware the page offers (Ruby and
    Sapphire need 3.0.0 or newer). It connects to the GBA with a Game Boy Color cable.
    Skip this for PC to Switch.
-3. **Play.** Connect the boards with three wires (the page shows which pins) and power
-   them from anything, or leave both on USB and press *Start* so the page carries the
-   link.
+3. **Play.** Connect the boards with three wires (the page shows which pins), or plug a
+   XIAO board into the GB-Link's expansion socket, and power them from anything. Or leave
+   both on USB and press *Start* so the page carries the link.
 
 On the Switch, go upstairs in a Pokémon Center to the Direct Corner, pick Trade Center
 or Colosseum and become the leader. On the GBA, pick the same thing and join the group.

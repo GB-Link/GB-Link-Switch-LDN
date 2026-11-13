@@ -1,27 +1,29 @@
 # Bridge firmware
 
 Firmware for the ESP32 board. It joins the Switch's local wireless like a second Switch
-(or hosts the room when the GBA leads) and passes the game's traffic to a GB-Link
-adapter running the wireless adapter mode. Once flashed and given its keys, it needs no
-computer.
+(or hosts the room when the GBA leads) and passes the game's traffic to the GBA: through
+a GB-Link adapter running the wireless adapter mode, or with the GBA's link port wired to
+the board, which is then the wireless adapter itself. Once flashed and given its keys, it
+needs no computer.
 
 The [web client](../web/README.md) installs it and stores the keys, so most people never
 need this page.
 
 ## Boards
 
-One source tree (`common/`) builds for five chips. The ESP32-S3 is the recommended one.
+One firmware builds for five chips. The ESP32-S3 is the recommended one. Every chip uses
+the pins of a Seeed Studio XIAO, so any XIAO fits the same wiring: D8 and D9 for a
+GB-Link, D0 to D3 for the GBA's link port.
 
-| Folder | Console | TX, to GB-Link GP9 | RX, to GB-Link GP8 |
-| --- | --- | --- | --- |
-| `ESP32` | USB-UART chip, 921600 baud | GPIO17 (TX2) | GPIO16 (RX2) |
-| `ESP32-S3` | native USB | GPIO2 | GPIO1 |
-| `ESP32-C6` | native USB | GPIO2 | GPIO1 |
-| `ESP32-C5` | native USB | GPIO0 | GPIO1 |
-| `ESP32-C3` | native USB | GPIO5 | GPIO4 |
+| Chip | Console | To a GB-Link's GP9 | To a GB-Link's GP8 | Link port SC, SI, SO, SD |
+| --- | --- | --- | --- | --- |
+| ESP32-S3 | native USB | D9 (GPIO8) | D8 (GPIO7) | D0 to D3 (GPIO1, 2, 3, 4) |
+| ESP32-C6 | native USB | D9 (GPIO20) | D8 (GPIO19) | D0 to D3 (GPIO0, 1, 2, 21) |
+| ESP32-C5 | native USB | D9 (GPIO9) | D8 (GPIO8) | D0 to D3 (GPIO1, 0, 25, 7) |
+| ESP32-C3 | native USB | D9 (GPIO9) | D8 (GPIO8) | D0 to D3 (GPIO2, 3, 4, 5) |
+| ESP32 | USB-UART chip, 921600 baud | GPIO17 (TX2) | GPIO16 (RX2) | GPIO18, 21, 19, 22 |
 
-Connect ground to ground as well. If the link stays silent, the two data wires are
-probably swapped: `LDN_PICO_SWAP` swaps them in software until the next restart.
+Other boards set their pins under `menuconfig`, "LDN bridge" and "GBA wireless adapter".
 
 Tested boards: Seeed Studio XIAO ESP32-S3 (attach its antenna), ESP32-S3-N16R8,
 M5Stack AtomS3, Seeed Studio XIAO ESP32-C6, a DOIT ESP32 DEVKIT V1 and an ESP32-C3
@@ -29,6 +31,50 @@ board. When it starts, the XIAO ESP32-C6 tries its onboard and external antennas
 Wi-Fi traffic around it and keeps the one that hears it better, so an antenna plugged into
 its U.FL socket is used without a setting. `LDN_ANTENNA 0|1` picks one by hand. The Seeed
 Studio XIAO ESP32-C5 has no onboard antenna: attach its external one.
+
+## With a GB-Link
+
+Plug a XIAO into the GB-Link's expansion socket, or wire D8 to the GB-Link's GP8, D9 to
+its GP9 and ground to ground. The board finds the GB-Link on its own, whichever of the two
+powers up first, and the GB-Link becomes the adapter. To use the board's USB as well (its
+console, or the web page), plug that in before the GB-Link: a computer may not see a board
+the GB-Link already powers.
+
+If the link stays silent, the two data wires are probably swapped: `LDN_PICO_SWAP` swaps
+them in software until the next restart.
+
+## Wired to the GBA
+
+Without a GB-Link, wire the GBA's link port to D0 to D3 and the board is the wireless
+adapter. Count the pins at the plug that goes into the GBA. A link cable crosses SO and
+SI between its two ends.
+
+| GBA link port | Line | XIAO | Original ESP32 |
+| --- | --- | --- | --- |
+| 2 | SO, the GBA's output | D2 | GPIO19 |
+| 3 | SI, the GBA's input | D1 | GPIO21 |
+| 4 | SD, the GBA's reset line | D3 | GPIO22 |
+| 5 | SC, the clock | D0 | GPIO18 |
+| 6 | GND | GND | GND |
+
+- Do not power the board from pin 1 (the GBA's 3.3 V). The board runs from its own USB.
+- The port runs at 3.3 V while a GBA game is running. A Game Boy or Game Boy Color
+  cartridge switches it to 5 V, which the board's pins do not tolerate. Only GBA games
+  use the wireless adapter, so keep the board off the port otherwise.
+- A 100 to 220 Ω resistor in series with SI and with SC (the two lines the board drives)
+  is optional protection.
+- Opening or closing the USB console can reset the board, and the adapter with it: a GBA
+  using the adapter at that moment gets a link error. Keep the page connected through a
+  session.
+- The original ESP32 has the least memory: wired to the GBA, hosting a room (GBA leads)
+  may not fit.
+- The ESP32-C3 and C5 have not been tried wired to a GBA yet. On both, some of D0 to D3
+  are pins the chip reads as it starts. If the board does not start with the GBA
+  connected, start it first and plug the cable in afterwards.
+
+At boot the console shows the adapter's self-test:
+
+    LDN_WA adapter on SC 0 SO 2 SI 1 SD 21, self-test passed: mode 3, ...
 
 ## Building
 
@@ -40,13 +86,14 @@ tools/build.sh ESP32-S3
 tools/build.sh ESP32-S3 flash /dev/ttyACM0
 ```
 
-To flash with another tool, write these three files from the build folder:
+Each chip builds in `build/<chip>`. To flash with another tool, write these three files
+from it:
 
 | Address | File |
 | --- | --- |
 | `0x0` (`0x1000` on the original ESP32) | `bootloader/bootloader.bin` |
 | `0x8000` | `partition_table/partition-table.bin` |
-| `0x10000` | `ldn_bridge_<chip>.bin` |
+| `0x10000` | `ldn_bridge.bin` |
 
 `tools/package_web.py` copies the built images into the web client.
 
@@ -68,15 +115,18 @@ LDN_KEYS
 
 ## How it works
 
-- The board only joins or hosts a room while a GB-Link adapter (or the web client) is
-  connected, so a board that is just plugged into a PC stays out of the way. With GB-Link
-  firmware that reports when the GBA looks for a group, and with the web client's
-  emulator, it joins a Switch's room only while the GBA's player looks for one (JOIN
-  GROUP, or the Union Room), and leaves when the player stops looking without joining.
+- The board only joins or hosts a room while it has a GBA to link, so a board that is just
+  plugged into a PC stays out of the way. It joins a Switch's room only while the GBA's
+  player looks for one (JOIN GROUP, or the Union Room), and leaves when the player stops
+  looking without joining. With older GB-Link firmware, which does not report that, the
+  board joins a FireRed room as soon as it finds one.
 - **Switch leads:** the board joins the Switch's room and shows it to the GBA as a
   wireless group.
 - **GBA leads:** the board hosts a room that looks like a Switch's, and the Switches
   join it: one for a trade or a two-player battle, up to three for a multi battle.
+- **Union Room:** works both ways. The GBA's player shows up in the Switch's Union Room
+  and the Switch's player in the GBA's, and either side can start an activity: trainer
+  cards, trades, the trading board, battles and chat.
 - The link between the two games is lockstep and the wireless adds lag, so
   `trade_shim.c` smooths over the differences: the Switch version runs one extra
   standby step after a trade, lost messages are resent, and old d-pad reports are
@@ -93,7 +143,7 @@ LDN_KEYS
 | `LDN_STATUS`, `LDN_BRIDGE_STATUS` | link state and counters |
 | `LDN_SHIM_LOG` | log of the last sessions, kept across restarts |
 | `LDN_RF` | signal strength of the room |
-| `LDN_PICO_STATUS`, `LDN_PICO_PROBE`, `LDN_PICO_SWAP` | the wires to the GB-Link |
+| `LDN_PICO_STATUS`, `LDN_PICO_PROBE`, `LDN_PICO_SWAP` | the wires to the GB-Link, or the board's own adapter |
 | `LDN_PICO_BOOTSEL` | restart the GB-Link into its bootloader for reflashing |
 | `LDN_BRIDGE_STOP`, `LDN_BRIDGE_START` | stop or start the bridge |
 | `LDN_ADAPTER host\|uart` | adapter on the wires, or carried over USB by the web client |

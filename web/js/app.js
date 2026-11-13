@@ -28,9 +28,16 @@ const $ = (id) => document.getElementById(id);
 
 const CHIP_NAMES = { esp32: 'ESP32', esp32c3: 'ESP32-C3', esp32c5: 'ESP32-C5', esp32c6: 'ESP32-C6', esp32s3: 'ESP32-S3' };
 // Standalone UART link pins: [board TX -> adapter GP9, board RX <- adapter GP8].
-const LINK_PINS = { esp32: [17, 16], esp32c3: [5, 4], esp32c5: [0, 1], esp32c6: [2, 1], esp32s3: [2, 1] };
-// Dev-board silkscreen labels where they differ from the GPIO number.
-const LINK_PIN_LABELS = { esp32: ['TX2', 'RX2'] };
+const LINK_PINS = { esp32: [17, 16], esp32c3: [9, 8], esp32c5: [9, 8], esp32c6: [20, 19], esp32s3: [8, 7] };
+// Board labels: a Seeed Studio XIAO's D9 and D8, an original ESP32 board's TX2 and RX2.
+const XIAO_LINK_LABELS = ['D9', 'D8'];
+const LINK_PIN_LABELS = {
+    esp32: ['TX2', 'RX2'],
+    esp32c3: XIAO_LINK_LABELS,
+    esp32c5: XIAO_LINK_LABELS,
+    esp32c6: XIAO_LINK_LABELS,
+    esp32s3: XIAO_LINK_LABELS,
+};
 const KEY_NAMES = {
     kek: 'aes_kek_generation_source',
     gen: 'aes_key_generation_source',

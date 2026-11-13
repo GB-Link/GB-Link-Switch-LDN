@@ -1,18 +1,13 @@
 #!/bin/bash
-# Build, flash or monitor one app for one chip with the pinned ESP-IDF.
-#   adapter  the wireless adapter alone, on the UART link a GB-Link uses (two boards)
-#   bridge   the Switch bridge with the adapter on the same chip (one board)
-# Usage: build.sh <adapter|bridge> <esp32|esp32s3|esp32c6> [build | size | flash <port> | monitor <port>]
+# Build, flash or monitor the wireless adapter alone (on the UART link a GB-Link uses) for
+# one chip with the pinned ESP-IDF. The bridge itself is built with firmware/tools/build.sh.
+# Usage: build.sh <esp32|esp32s3|esp32c6> [build | size | flash <port> | monitor <port>]
 set -euo pipefail
-APP=${1:-}; CHIP=${2:-}; ACTION=${3:-build}; PORT=${4:-}
+APP=adapter; CHIP=${1:-}; ACTION=${2:-build}; PORT=${3:-}
 SDK=${SDK_PATH:-$HOME/esp/esp-idf-v6.1}
 REV=fff9895c82d744c7237be8847347bdd1b07c6643
 ROOT=$(cd "$(dirname "$0")" && pwd)
-USAGE="Usage: $0 <adapter|bridge> <esp32|esp32s3|esp32c6> [build | size | flash <port> | monitor <port>]"
-case $APP in
-    adapter|bridge) ;;
-    *) echo "$USAGE"; exit 1 ;;
-esac
+USAGE="Usage: $0 <esp32|esp32s3|esp32c6> [build | size | flash <port> | monitor <port>]"
 case $CHIP in
     esp32|esp32s3|esp32c6) ;;
     *) echo "$USAGE"; exit 1 ;;

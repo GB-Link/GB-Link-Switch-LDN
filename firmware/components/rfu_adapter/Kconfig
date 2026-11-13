@@ -1,0 +1,65 @@
+menu "GBA wireless adapter"
+
+config WA_PIN_SC
+    int "SC: the link clock (GBA link port pin 5)"
+    default 18 if IDF_TARGET_ESP32
+    default 2 if IDF_TARGET_ESP32C3
+    default 1 if IDF_TARGET_ESP32C5
+    default 0 if IDF_TARGET_ESP32C6
+    default 1 if IDF_TARGET_ESP32S3
+    help
+        D0 on a Seeed Studio XIAO.
+
+config WA_PIN_SO
+    int "SO: the GBA's output (link port pin 2)"
+    default 19 if IDF_TARGET_ESP32
+    default 4 if IDF_TARGET_ESP32C3
+    default 25 if IDF_TARGET_ESP32C5
+    default 2 if IDF_TARGET_ESP32C6
+    default 3 if IDF_TARGET_ESP32S3
+    help
+        D2 on a Seeed Studio XIAO.
+
+config WA_PIN_SI
+    int "SI: the GBA's input (link port pin 3)"
+    default 21 if IDF_TARGET_ESP32
+    default 3 if IDF_TARGET_ESP32C3
+    default 0 if IDF_TARGET_ESP32C5
+    default 1 if IDF_TARGET_ESP32C6
+    default 2 if IDF_TARGET_ESP32S3
+    help
+        D1 on a Seeed Studio XIAO.
+
+config WA_PIN_SD
+    int "SD: the GBA's soft-reset line (link port pin 4)"
+    default 22 if IDF_TARGET_ESP32
+    default 5 if IDF_TARGET_ESP32C3
+    default 7 if IDF_TARGET_ESP32C5
+    default 21 if IDF_TARGET_ESP32C6
+    default 4 if IDF_TARGET_ESP32S3
+    help
+        D3 on a Seeed Studio XIAO.
+
+config WA_HANDSHAKE_SPIN_US
+    int "Microseconds a word's interrupt waits for the GBA's handshake"
+    range 2 200
+    default 15
+    help
+        After each command word the GBA raises SO within a few microseconds of seeing
+        SI high. Waiting here releases it straight away; past this, an SO interrupt
+        does it a little later.
+
+config WA_TASK_PRIORITY
+    int "Adapter task priority"
+    range 1 24
+    default 15
+
+config WA_TASK_CORE
+    int "Adapter task core (dual-core chips)"
+    range 0 1
+    default 1
+    help
+        The core that runs the adapter task and takes its interrupts. Core 1 keeps
+        them away from Wi-Fi on dual-core chips.
+
+endmenu

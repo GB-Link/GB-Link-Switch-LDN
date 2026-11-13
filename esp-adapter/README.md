@@ -1,14 +1,16 @@
 # GBA Wireless Adapter on an ESP32
 
-The GBA Wireless Adapter (AGB-015), emulated on the ESP32's own pins, so the bridge no
-longer needs a GB-Link's RP2040 to talk to the GBA. Builds for the original ESP32, the
-ESP32-S3 and the ESP32-C6.
+The GBA Wireless Adapter (AGB-015), emulated on an ESP32's own pins. The bridge firmware
+([`firmware/`](../firmware/README.md)) runs it when the GBA's link port is wired to the
+bridge board, so one board sits between the GBA and the Switch. This folder holds a board
+that is only the adapter: it speaks the GB-Link's UART protocol and takes the GB-Link's
+place next to a bridge board. It builds for the original ESP32, the ESP32-S3 and the
+ESP32-C6.
 
-| Folder | What it is |
-|---|---|
-| `components/rfu_adapter` | The adapter: the GB-Link firmware's protocol core (`rfuProtocol.hpp`) and the ESP32 side of the link port. The core differs from the firmware's in one way: it resets its state in place, so the GBA's word interrupt never needs a large stack. |
-| `adapter/` | A board that is only the adapter. It speaks the GB-Link's UART protocol, so it takes the GB-Link's place next to a bridge board running the normal firmware. |
-| `bridge/` | The Switch bridge with the adapter on the same chip: one board between the GBA and the Switch. |
+The adapter itself is `firmware/components/rfu_adapter`: the GB-Link firmware's protocol
+core (`rfuProtocol.hpp`) and the ESP32 side of the link port. The core differs from the
+firmware's in one way: it resets its state in place, so the GBA's word interrupt never
+needs a large stack.
 
 ## How it works
 
@@ -20,6 +22,10 @@ counter on SC counts the GBA's 32 clock edges and raises the word interrupt.
 
 The slave can miss a word's last bit. A second pulse counter counts the ones SO shows
 at SC's rising edges, and the last bit is taken from that count.
+
+The ESP32-C3 has no pulse counter. There, SC's first falling edge raises an interrupt
+that follows the rest of the word on the pins: the word has ended once SC rests high, and
+SO read in the last bit gives the bit the slave misses.
 
 Between words, the GBA's wireless library runs a handshake on SI and SO. The interrupt
 holds SI high, waits for the GBA's SO, and then loads the next reply. The level SI
@@ -34,14 +40,14 @@ self-test moves SI. Falls that close together are never a reset's, so a run of t
 turns SD's interrupt off for 50 ms instead of letting it take the core.
 
 SI's edges couple into SC along the cable. The board drives SI and SC at the lowest
-drive strength, and on the S3 and C6, SC, SO and SD pass through the GPIO glitch
-filter.
+drive strength, and on the chips that have one, SC, SO and SD pass through the GPIO
+glitch filter.
 
 When the adapter has an event for the GBA, the adapter drives the clock. It bit-banges
 those words on GPIO at about 160 kHz, with the same handshake the GB-Link runs. A
 slower bit only stretches the word.
 
-The SPI slaves of the three chips differ in when they put their first bit out. At
+The chips' SPI slaves differ in when they put their first bit out. At
 power-up a self-test clocks test words through the slave from the GPIO matrix's
 constant inputs and watches SI. It picks the setting that puts each bit out before the
 GBA samples it, and finds where the received word starts.
@@ -64,7 +70,7 @@ pins in the same places.
 - The port runs at 3.3 V while a GBA game is running. A Game Boy or Game Boy Color
   cartridge switches it to 5 V, which the ESP32's pins do not tolerate. Only GBA games
   use the wireless adapter, so keep the board off the port otherwise.
-- The one-board bridge can report which of the two the port is in. Wire pin 1 to an
+- The bridge firmware can report which of the two the port is in. Wire pin 1 to an
   ADC pin through a divider, 10 kΩ from pin 1 to the pin and 10 kΩ from the pin to GND,
   and set that pin under `menuconfig`, "LDN bridge". ADC pins: GPIO32-39 on the ESP32,
   GPIO1-10 on the S3, GPIO0-6 on the C6. The console then prints `LDN_GBA_VCC` with the
@@ -77,18 +83,18 @@ pins in the same places.
 
 ## Two boards: the adapter in place of a GB-Link
 
-Flash `adapter/` to one board. The other board keeps the normal bridge firmware
-(`firmware/ESP32*`) and talks to the adapter board exactly as it would to a GB-Link.
-The chips can differ, for example a C6 adapter next to an S3 bridge.
+Flash `adapter/` to one board. The other board runs the bridge firmware and talks to the
+adapter board exactly as it would to a GB-Link. The chips can differ, for example a C6
+adapter next to an S3 bridge.
 
 | Adapter board | Bridge board |
 |---|---|
-| TX: GPIO17 (ESP32), D8 (XIAO S3, C6) | RX: GPIO16 (ESP32), GPIO1 (S3, C6) |
-| RX: GPIO16 (ESP32), D9 (XIAO S3, C6) | TX: GPIO17 (ESP32), GPIO2 (S3, C6) |
+| TX: GPIO17 (ESP32), D8 (XIAO S3, C6) | RX: GPIO16 (ESP32), D8 (XIAO) |
+| RX: GPIO16 (ESP32), D9 (XIAO S3, C6) | TX: GPIO17 (ESP32), D9 (XIAO) |
 | GND | GND |
 
-On a XIAO the adapter's UART sits where a GB-Link's does (D8 for GP8, D9 for GP9), so a
-XIAO running the one-board bridge also takes it as its GB-Link: D8 to D8, D9 to D9.
+On a XIAO the adapter's UART sits where a GB-Link's does (D8 for GP8, D9 for GP9), so
+two XIAOs wire D8 to D8 and D9 to D9.
 
 The adapter runs from power-up and keeps running when the bridge board restarts.
 During play the adapter board only needs power. Opening or closing its console can
@@ -101,70 +107,17 @@ commands:
   deliveries, resets, the network side and the level on each line.
 - `selftest`: runs the self-test again. Only with the GBA off or idle, as it drives SI.
 
-## One board: `bridge/`
-
-The bridge firmware with the adapter on its own pins. The page, the keys and the
-console protocol are the same as for the bridge with a GB-Link. The adapter starts with
-the board and reports through the same frames a GB-Link sends, so the page's wiring
-check hears it. At boot the console prints the self-test:
-
-    LDN_WA adapter on SC 0 SO 2 SI 1 SD 21, self-test passed: mode 3, ...
-
-On a XIAO S3 or C6 the one-board bridge also works with a GB-Link. Plug the XIAO into the
-GB-Link's expansion socket, or wire D8 to the GB-Link's GP8, D9 to its GP9 and GND to GND.
-At power-up the board watches D8 for up to a second: a GB-Link's UART output rests high
-there. If it finds one, the GB-Link is the adapter and drives the GBA, the board leaves its
-own adapter pins alone, and the console prints `LDN_WA GB-Link on RX ... TX ...`.
-Otherwise the adapter runs on the board's own pins. Power the GB-Link first, or both
-together. A board whose GB-Link pins are set to adapter pins does not look for one. To use
-the board's own USB as well (its console, or the page), plug that in first, then the
-GB-Link, then press the board's reset button: a computer may not see a board that the
-GB-Link already powers, and the board looks for a GB-Link only at power-up.
-
-The board looks for a Switch's room only while the GBA's player looks for a group (JOIN
-GROUP at the Direct Corner, or in the Union Room), and leaves a room again when the player
-stops looking without joining it. A board whose GBA is doing something else stays out of
-other rooms, so it never takes a place meant for a Switch. With a GB-Link this needs
-GB-Link firmware that reports when the GBA looks for a group; with older GB-Link firmware
-the board joins a FireRed room as soon as it finds one. A game in the web page's emulator
-reports its searches too.
-
-After every session and every failed join the bridge starts over without restarting
-the chip. The adapter keeps its state, so a GBA between links, in the Union Room or
-back at the counter, carries on. A link still open at that moment ends as if the
-partner had left.
-
-The Union Room works both ways. The GBA's player shows up in the Switch's Union Room
-and the Switch's player in the GBA's, and either side can start an activity: trainer
-cards, trades, the trading board, battles and chat. The bridge hosts the GBA's player
-while it waits, and joins the Switch's network when the GBA starts an activity with the
-Switch's player. While hosting, the radio hears only the room's channel. The room opens
-where a Switch's Union Room was last heard, if one was. Until a Switch is heard there, the
-radio steps off the channel for a fifth of a second each second to listen on the other two,
-with the room kept open, and a Switch found on another channel has the room moved to it.
-
-Limits of one board:
-
-- Opening or closing the USB console can reset the chip, and the adapter with it: a
-  GBA using the adapter at that moment gets a link error. Keep the page connected
-  through a session.
-- Memory on the original ESP32: the adapter takes about 14 KB of static RAM. That
-  leaves about 6 KB of the chip's static RAM free, against about 21 KB for the bridge
-  with a GB-Link, and the heap is smaller by about the same amount. With a GB-Link, that
-  chip had about 21 KB of heap free before hosting a room (GBA leads), so hosting there
-  may not fit. The S3 and C6 have room to spare.
-
 ## Build and flash
 
 ESP-IDF v6.1 at the same commit as the bridge firmware, in `~/esp/esp-idf-v6.1` (or set
 `SDK_PATH`).
 
-    ./build.sh adapter esp32s3                     # build
-    ./build.sh bridge esp32c6 flash /dev/ttyACM0   # build and flash
-    ./build.sh adapter esp32 monitor /dev/ttyUSB0  # console
-    ./build.sh bridge esp32 size                   # memory use
+    ./build.sh esp32s3                     # build
+    ./build.sh esp32c6 flash /dev/ttyACM0   # build and flash
+    ./build.sh esp32 monitor /dev/ttyUSB0  # console
+    ./build.sh esp32 size                   # memory use
 
-Each app and chip builds in its own `build-<app>-<chip>` folder. For menuconfig, run
+Each chip builds in its own `build-adapter-<chip>` folder. For menuconfig, run
 `idf.py -C adapter -B build-adapter-esp32s3 menuconfig`.
 
 ## Bring-up
@@ -183,7 +136,7 @@ Each app and chip builds in its own `build-<app>-<chip>` folder. For menuconfig,
    - `WA the GBA found the adapter and sends commands`
 3. `status` should show no growing count of bad bit counts or realigned words, and no
    failed event deliveries.
-4. Wire the bridge board (or flash `bridge/` instead) and play.
+4. Wire the bridge board and play.
 
 ## Settings
 
@@ -193,5 +146,4 @@ Each app and chip builds in its own `build-<app>-<chip>` folder. For menuconfig,
 | `WA_HANDSHAKE_SPIN_US` | 15 | How long a word's interrupt waits for the GBA's handshake before leaving it to the SO interrupt. |
 | `WA_TASK_PRIORITY` | 15 | |
 | `WA_TASK_CORE` | 1 | Dual-core chips: the core for the adapter task and its interrupts, away from Wi-Fi. |
-| `GB_LINK_TX_GPIO`, `GB_LINK_RX_GPIO` | see Two boards | `adapter/` only. |
-| `PICO_LINK_TX_GPIO`, `PICO_LINK_RX_GPIO` | D9 and D8 on a XIAO | `bridge/` only, under "LDN bridge": where a GB-Link's GP9 and GP8 are wired. |
+| `GB_LINK_TX_GPIO`, `GB_LINK_RX_GPIO` | see Two boards | The adapter's UART. |

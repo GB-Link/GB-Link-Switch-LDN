@@ -7,7 +7,7 @@
    AwaitMode, then reports every 500 ms (tag 0x0E, byte 1 = a GBA is clocking it). A mode
    entry is answered with AwaitMode on its next pass. It can stall (no passes). */
 
-#include "../../bridge/main/pico_link_local.c"
+#include "../../../firmware/main/pico_link_local.c"
 
 #include <stdio.h>
 #include <stdlib.h>

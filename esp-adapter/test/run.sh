@@ -9,7 +9,7 @@ shift || true
 [ -f "$DECOMP/src/librfu_intr.c" ] || { echo "No pokefirered checkout at $DECOMP"; exit 1; }
 OUT="$HERE/out"
 python3 "$HERE/patch_librfu.py" "$DECOMP" "$OUT"
-COMPONENT="$HERE/../components/rfu_adapter"
+COMPONENT="$HERE/../../firmware/components/rfu_adapter"
 CFLAGS=(-O1 -g -Wall -Wno-unused -I "$HERE/sim" -I "$OUT" -I "$COMPONENT/include")
 for f in librfu_stwi librfu_intr librfu_sio32id; do
     gcc -std=gnu17 "${CFLAGS[@]}" -Wno-maybe-uninitialized -c "$OUT/$f.c" -o "$OUT/$f.o"

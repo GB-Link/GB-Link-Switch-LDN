@@ -15,8 +15,8 @@ directly.
 1. **ESP32 board:** install the firmware and drop your `prod.keys` on the page.
 2. **GB-Link adapter:** install the firmware the page offers. Ruby and Sapphire need
    firmware 3.0.0 or newer.
-3. **Play:** wire the boards together, or leave both on USB and let the page pass the
-   traffic between them. For Ruby and Sapphire, pick them here: the page links the game
+3. **Play:** wire the boards together (a XIAO board plugs into the GB-Link's expansion
+   socket), or leave both on USB and let the page pass the traffic between them. For Ruby and Sapphire, pick them here: the page links the game
    by cable (the adapter's mode `0x01`) and translates that link into the Switch's
    wireless, so both boards must be on USB. For Emerald and Ruby/Sapphire the page's
    National Dex bypass, when turned on, lets trades go ahead whatever either game's

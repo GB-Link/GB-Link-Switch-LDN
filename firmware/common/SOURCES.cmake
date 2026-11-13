@@ -1,6 +1,6 @@
 # Chip-independent bridge sources: LDN radio, Pia session, link shim, console protocol
-# and GB-Link UART. Each project under firmware/ supplies its target, console transport,
-# pinned Wi-Fi driver hash and sdkconfig.
+# and GB-Link UART. firmware/main/CMakeLists.txt adds each chip's console transport, board
+# file and pinned Wi-Fi driver hash; firmware/sdkconfig.defaults.<chip> its settings.
 set(BRIDGE_COMMON "${CMAKE_CURRENT_LIST_DIR}")
 set(BRIDGE_SOURCES
     "${BRIDGE_COMMON}/ldn_probe.c"
