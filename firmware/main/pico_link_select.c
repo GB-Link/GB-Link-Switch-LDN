@@ -120,6 +120,7 @@ static void recheck_task(void *arg)
         s_gblink = true;
         announce_gblink();
         pico_link_uart_start();
+        wa_adapter_stop();   /* its link disarmed and its memory back */
         break;
     }
     vTaskDelete(NULL);

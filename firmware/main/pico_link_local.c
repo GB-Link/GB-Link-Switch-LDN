@@ -16,7 +16,8 @@
    commands and RFU1 chunks go straight to the adapter, and its chunks, telemetry and
    status codes come back as the frames a GB-Link would send, so the bridge above is
    unchanged. The host port (the web client carrying the frames for its own adapter)
-   works as in pico_link.c. */
+   works as in pico_link.c; while it is in use the adapter on these pins is stopped and
+   its memory goes back to the heap, which the client's session needs. */
 
 #define SYNC0 0x47 /* 'G' */
 #define SYNC1 0x42 /* 'B' */
@@ -223,6 +224,19 @@ static void written_frame(const pico_frame_t *frame)
 
 /* ---- link task -------------------------------------------------------------- */
 
+/* The adapter on these pins, started at power-up and again when the host port is given
+   back. */
+static bool start_adapter(void)
+{
+    const wa_config_t config = {
+        .pins = {.sc = CONFIG_WA_PIN_SC, .so = CONFIG_WA_PIN_SO, .si = CONFIG_WA_PIN_SI, .sd = CONFIG_WA_PIN_SD},
+        .role = 0,
+        .spin_us = CONFIG_WA_HANDSHAKE_SPIN_US,
+    };
+    const wa_transport_t transport = {.data = adapter_data, .status = adapter_status};
+    return wa_adapter_start(&config, &transport);
+}
+
 static void send_set_mode(void)
 {
     static const uint8_t set_mode_rfu[] = {0x00, 0x07, 0x00};
@@ -277,13 +291,7 @@ void pico_link_start(void)
 
     s_running = true;
     /* Live from power-up, so the GBA finds its adapter before there is a room. */
-    const wa_config_t config = {
-        .pins = {.sc = CONFIG_WA_PIN_SC, .so = CONFIG_WA_PIN_SO, .si = CONFIG_WA_PIN_SI, .sd = CONFIG_WA_PIN_SD},
-        .role = 0,
-        .spin_us = CONFIG_WA_HANDSHAKE_SPIN_US,
-    };
-    const wa_transport_t transport = {.data = adapter_data, .status = adapter_status};
-    ESP_ERROR_CHECK(wa_adapter_start(&config, &transport) ? ESP_OK : ESP_ERR_NO_MEM);
+    if (s_port == PICO_PORT_UART) ESP_ERROR_CHECK(start_adapter() ? ESP_OK : ESP_ERR_NO_MEM);
 #if CONFIG_FREERTOS_NUMBER_OF_CORES > 1
     xTaskCreatePinnedToCore(link_task, "pico_link", 4096, NULL, 10, &s_task, 1);
 #else
@@ -306,11 +314,14 @@ bool pico_link_write(const uint8_t *bytes, size_t length)
     if (s_port == PICO_PORT_HOST)
     {
         /* Queued for the console task, the only wire-layer user. */
-        if (length > sizeof(((pico_frame_t *)0)->bytes) || !s_host_out) return false;
+        if (length > sizeof(((pico_frame_t *)0)->bytes)) return false;
         pico_frame_t frame;
         frame.length = (uint16_t)length;
         memcpy(frame.bytes, bytes, length);
-        return xQueueSend(s_host_out, &frame, 0) == pdTRUE;
+        xSemaphoreTake(s_adapterLock, portMAX_DELAY);
+        const bool queued = s_port == PICO_PORT_HOST && s_host_out && xQueueSend(s_host_out, &frame, 0) == pdTRUE;
+        xSemaphoreGive(s_adapterLock);
+        return queued;
     }
     xSemaphoreTake(s_adapterLock, portMAX_DELAY);
     for (size_t i = 0; i < length; ++i) parse(&s_writeParser, bytes[i], written_frame);
@@ -318,16 +329,40 @@ bool pico_link_write(const uint8_t *bytes, size_t length)
     return true;
 }
 
+/* Under the adapter's lock: once the port has moved, no frame is on its way to the
+   adapter or into the host port's queue. */
+static void move_port(pico_port_t port, QueueHandle_t host_out)
+{
+    xSemaphoreTake(s_adapterLock, portMAX_DELAY);
+    s_port = port;
+    s_host_out = host_out;
+    xSemaphoreGive(s_adapterLock);
+}
+
 bool pico_link_set_port(pico_port_t port)
 {
-    if (port == s_port) return true;
-    /* Outbound queue for the host port, allocated on first use. */
-    if (port == PICO_PORT_HOST && !s_host_out)
+    if (port == s_port || !s_adapterLock) return port == s_port;
+    if (port == PICO_PORT_HOST)
     {
-        s_host_out = xQueueCreate(FRAME_QUEUE, sizeof(pico_frame_t));
-        if (!s_host_out) return false;
+        /* The adapter on these pins stops first: its memory is what the host port's queue
+           and the client's session run on. */
+        move_port(PICO_PORT_HOST, NULL);
+        wa_adapter_stop();
+        const QueueHandle_t host_out = xQueueCreate(FRAME_QUEUE, sizeof(pico_frame_t));
+        if (!host_out)
+        {
+            move_port(PICO_PORT_UART, NULL);
+            start_adapter();
+            return false;
+        }
+        move_port(PICO_PORT_HOST, host_out);
     }
-    s_port = port;
+    else
+    {
+        const QueueHandle_t host_out = s_host_out;
+        move_port(PICO_PORT_UART, NULL);
+        if (host_out) vQueueDelete(host_out);
+    }
     /* Adapter state is per port. */
     s_hostParser.state = RX_SYNC0;
     s_awaitMode = false;
@@ -336,8 +371,8 @@ bool pico_link_set_port(pico_port_t port)
     s_searchReports = false;
     s_firstFrameLength = 0;
     pico_link_reset_inbound();
-    pico_frame_t discard;
-    while (s_host_out && xQueueReceive(s_host_out, &discard, 0) == pdTRUE) { }
+    /* Its AwaitMode then lands in the state just cleared. */
+    if (port == PICO_PORT_UART && !start_adapter()) return false;
     return true;
 }
 
@@ -352,8 +387,12 @@ void pico_link_feed_host(const uint8_t *bytes, size_t length)
 
 bool pico_link_poll_host_out(uint8_t *frame, size_t capacity, size_t *length)
 {
+    if (!s_adapterLock) return false;
     pico_frame_t next;
-    if (!s_host_out || xQueueReceive(s_host_out, &next, 0) != pdTRUE) return false;
+    xSemaphoreTake(s_adapterLock, portMAX_DELAY);
+    const bool got = s_host_out && xQueueReceive(s_host_out, &next, 0) == pdTRUE;
+    xSemaphoreGive(s_adapterLock);
+    if (!got) return false;
     if (next.length > capacity) return false;
     memcpy(frame, next.bytes, next.length);
     *length = next.length;

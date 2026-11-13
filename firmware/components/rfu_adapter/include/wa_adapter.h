@@ -34,6 +34,11 @@ bool wa_adapter_start(const wa_config_t *config, const wa_transport_t *transport
 /* The task is up and the GBA link armed. */
 bool wa_adapter_running(void);
 
+/* Stops a started adapter and gives its memory back: the GBA's lines are let go, the
+   task ends, and the core and its queues are freed. wa_adapter_start starts it again,
+   with the self-test. Waits for the task; not from the adapter task. */
+void wa_adapter_stop(void);
+
 /* SetMode(wireless) for a started adapter: a fresh adapter with this role, then
    AwaitMode, as the GB-Link's mode entry. A GBA using it has to log in again. */
 void wa_adapter_enter_mode(uint8_t role);

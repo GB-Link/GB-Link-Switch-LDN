@@ -1,11 +1,12 @@
-/* Host test of the one-board link (bridge/main/pico_link_local.c) against a scripted
+/* Host test of the one-board link (firmware/main/pico_link_local.c) against a scripted
    adapter: the bridge must see what a GB-Link on the UART would give it. Checks when
    SetMode reaches the adapter, the frames both ways, and the host port. Run with
    test/link/run.sh.
 
    Adapter model, per the rfu_adapter component: it starts on its own task, announces
    AwaitMode, then reports every 500 ms (tag 0x0E, byte 1 = a GBA is clocking it). A mode
-   entry is answered with AwaitMode on its next pass. It can stall (no passes). */
+   entry is answered with AwaitMode on its next pass. It can stall (no passes). Stopped,
+   it is silent until started again. */
 
 #include "../../../firmware/main/pico_link_local.c"
 
@@ -28,7 +29,7 @@ static struct
 {
     bool started, running, stalled, gba, entry_pending;
     wa_transport_t transport;
-    unsigned starts, entries;
+    unsigned starts, stops, entries;
     uint8_t role;
     TickType_t next_report;
     uint8_t fed[1024];
@@ -47,6 +48,15 @@ bool wa_adapter_start(const wa_config_t *config, const wa_transport_t *transport
 }
 
 bool wa_adapter_running(void) { return g_wa.running; }
+
+void wa_adapter_stop(void)
+{
+    if (!g_wa.started) return;
+    ++g_wa.stops;
+    g_wa.started = false;
+    g_wa.running = false;
+    g_wa.entry_pending = false;
+}
 
 void wa_adapter_enter_mode(uint8_t role)
 {
@@ -169,14 +179,23 @@ static void time_passes(TickType_t ticks)
 /* ---- FreeRTOS stubs */
 
 struct host_queue { uint32_t length, item_size, count, head; uint8_t *items; };
+static int g_queues;   /* queues allocated and not deleted */
 
 QueueHandle_t xQueueCreate(uint32_t length, uint32_t item_size)
 {
+    ++g_queues;
     QueueHandle_t queue = calloc(1, sizeof(*queue));
     queue->length = length;
     queue->item_size = item_size;
     queue->items = calloc(length, item_size);
     return queue;
+}
+
+void vQueueDelete(QueueHandle_t queue)
+{
+    --g_queues;
+    free(queue->items);
+    free(queue);
 }
 
 BaseType_t xQueueSend(QueueHandle_t queue, const void *item, TickType_t wait)
@@ -301,8 +320,12 @@ static void check_frames(void)
     g_wa.search_age = 1234;
     check(pico_link_gba_search_age_ms() == 1234, "the adapter's search age is passed on");
 
-    /* Host port: the client's adapter. This chip's adapter is neither fed nor heard. */
+    /* Host port: the client's adapter. This chip's adapter is stopped, so its memory is
+       there for the client's session, and is neither fed nor heard. */
+    const int queues = g_queues;
     check(pico_link_set_port(PICO_PORT_HOST), "the host port opens");
+    check(g_wa.stops == 1 && !g_wa.started, "this chip's adapter stops while the client's carries the link");
+    check(g_queues == queues + 1, "the host port has its own queue");
     check(!pico_link_await_mode() && !pico_link_gba_active(), "adapter state starts over on the host port");
     check(pico_link_gba_search_age_ms() == -1, "no search reports before the client's adapter sends one");
     g_wa.fed_length = 0;
@@ -328,8 +351,17 @@ static void check_frames(void)
     pico_link_feed_host(searched, sizeof(searched));
     check(pico_link_gba_search_age_ms() == 200, "the client's report of a search");
 
-    /* Back on the pins. */
+    /* Back on the pins: the host port's queue goes, this chip's adapter starts again and
+       announces itself. */
+    const unsigned starts = g_wa.starts;
     check(pico_link_set_port(PICO_PORT_UART), "back to this chip's adapter");
+    check(g_queues == queues, "the host port's queue is freed");
+    check(g_wa.starts == starts + 1 && g_wa.started, "this chip's adapter starts again");
+    check(!pico_link_await_mode(), "its state starts over");
+    drain_inbound();
+    adapter_runs();
+    check(pico_link_await_mode(), "its AwaitMode is heard");
+    drain_inbound();
     check(pico_link_gba_search_age_ms() == 1234, "searches are this chip's adapter's again");
     g_wa.transport.data(chunk, sizeof(chunk), g_wa.transport.ctx);
     check(next_inbound(frame, &length) && length == HEADER_LENGTH + 64, "this chip's adapter is heard again");

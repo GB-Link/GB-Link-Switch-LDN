@@ -519,9 +519,12 @@ static void on_sd(void *arg)
 
 bool wa_port_init(const wa_pins_t *pins, const wa_isr_t *isr, wa_cal_t *cal)
 {
-    s_pins = *pins;
+    static bool s_set_up;
     s_isr = *isr;
     s_task = xTaskGetCurrentTaskHandle();
+    if (s_set_up) return wa_port_calibrate(cal);
+    s_set_up = true;
+    s_pins = *pins;
     s_core = xPortGetCoreID();
 
     /* The driver claims and clocks the peripheral and routes the three lines; no
@@ -681,6 +684,22 @@ bool wa_port_spawn(void (*entry)(void *), void *arg)
 #endif
     return xTaskCreatePinnedToCore(entry, "wireless_adapter", 6144, arg, CONFIG_WA_TASK_PRIORITY, &s_task, core) == pdPASS;
 }
+
+void wa_port_park(void)
+{
+    for (;;) vTaskSuspend(NULL);
+}
+
+void wa_port_end(void)
+{
+    TaskHandle_t task = s_task;
+    s_task = NULL;
+    if (!task) return;
+    while (eTaskGetState(task) != eSuspended) vTaskDelay(1);
+    vTaskDelete(task);
+}
+
+void wa_port_sleep(uint32_t ms) { vTaskDelay(pdMS_TO_TICKS(ms) ? pdMS_TO_TICKS(ms) : 1); }
 
 uint32_t wa_port_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
 uint32_t wa_port_us(void) { return (uint32_t)esp_timer_get_time(); }

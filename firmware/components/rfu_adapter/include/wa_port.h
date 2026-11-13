@@ -50,7 +50,8 @@ typedef struct {
 
 /* Sets up the pins, the SPI slave, the edge counter and the interrupts, then runs
    the self-test. Must be called from the task that later calls the other functions,
-   so the interrupts land on its core. */
+   so the interrupts land on its core. A restarted adapter task, on the same core, keeps
+   that set-up and runs the self-test only. */
 bool wa_port_init(const wa_pins_t *pins, const wa_isr_t *isr, wa_cal_t *cal);
 /* Runs the self-test again (no word armed, interrupts off). */
 bool wa_port_calibrate(wa_cal_t *cal);
@@ -83,6 +84,9 @@ bool wa_port_sd(void);
 
 /* OS */
 bool wa_port_spawn(void (*entry)(void *), void *arg);  /* the adapter task */
+void wa_port_park(void);                         /* adapter task, stopped: wait to be ended */
+void wa_port_end(void);                          /* another task: end the parked adapter task */
+void wa_port_sleep(uint32_t ms);                 /* another task: sleep */
 uint32_t wa_port_ms(void);
 uint32_t wa_port_us(void);
 void wa_port_delay_us(uint32_t us);

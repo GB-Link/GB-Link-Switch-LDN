@@ -730,6 +730,14 @@ bool wa_port_spawn(void (*entry)(void*), void* arg)
     return true;
 }
 
+// The simulated adapter never stops.
+void wa_port_park(void)
+{
+    for (;;) wa_port_wait(1000);
+}
+void wa_port_end(void) {}
+void wa_port_sleep(uint32_t) {}
+
 uint32_t wa_port_ms(void) { return static_cast<uint32_t>(now / 1000000); }
 uint32_t wa_port_us(void) { call(); return static_cast<uint32_t>(now / 1000); }
 void wa_port_delay_us(uint32_t us) { adaSpend(static_cast<ns_t>(us) * 1000); }

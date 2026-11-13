@@ -46,6 +46,9 @@ bool g_started = false;
 volatile bool g_running = false;
 volatile bool g_recalibrate = false;
 volatile bool g_enterMode = false;
+volatile bool g_stopRequested = false;
+volatile bool g_taskParked = false;   // the task has let go of the pins and the core
+volatile uint32_t g_feeding = 0;      // wa_adapter_feed calls in progress
 volatile uint8_t g_enterRole = 0;
 
 enum Wire : uint8_t
@@ -177,6 +180,11 @@ void frameIn(void*, uint32_t ptype, uint32_t hdata, const uint8_t* payload, uint
 {
     if (payloadLen > sizeof(g_parked[0].payload)) return;
     wa_port_lock();
+    if (!g_parked)
+    {
+        wa_port_unlock();
+        return;
+    }
     g_ct.framesIn++;
     // Beacons repeat; one that cannot be applied at once is dropped rather than parked.
     if (ptype == NET_BROADCAST && (g_parkedCount > 0 || !safeToApplyInbound(g_core->comstate)))
@@ -915,7 +923,7 @@ void adapterTask(void*)
     g_running = true;
     sendStatus(0xFF02);   // in the mode from power-up
 
-    for (;;)
+    while (!g_stopRequested)
     {
         const uint32_t now = wa_port_ms();
         if (g_recalibrate) recalibrate();
@@ -936,6 +944,15 @@ void adapterTask(void*)
         reportDiagnostics(now);
         wa_port_wait(1);
     }
+
+    // Stopped: the link disarmed and its interrupts off; wa_adapter_stop frees the rest.
+    g_running = false;
+    wa_port_lock();
+    stopLink();
+    wa_port_unlock();
+    wa_port_sd_irq(false);
+    g_taskParked = true;
+    wa_port_park();
 }
 
 }  // namespace
@@ -943,6 +960,18 @@ void adapterTask(void*)
 extern "C" bool wa_adapter_start(const wa_config_t* config, const wa_transport_t* transport)
 {
     if (__atomic_exchange_n(&g_started, true, __ATOMIC_ACQ_REL)) return true;
+    // Per-session state, fresh as at power-up for an adapter started again.
+    g_stopRequested = false;
+    g_taskParked = false;
+    g_recalibrate = false;
+    g_enterMode = false;
+    g_parkedCount = 0;
+    g_outHead = 0;
+    g_outCount = 0;
+    g_chunkLen = 0;
+    g_retriesThisWait = 0;
+    g_lastNetRxMs = 0;
+    g_reportedReconnecting = false;
     g_core = new (std::nothrow) RfuCore();
     g_parked = new (std::nothrow) ParkedFrame[kParkedMax];
     g_out = new (std::nothrow) uint8_t[kOutRing];
@@ -965,6 +994,29 @@ extern "C" bool wa_adapter_start(const wa_config_t* config, const wa_transport_t
     return wa_port_spawn(&adapterTask, nullptr);
 }
 
+extern "C" void wa_adapter_stop(void)
+{
+    if (!g_started) return;
+    g_stopRequested = true;
+    wa_port_wake();
+    while (!g_taskParked) wa_port_sleep(2);
+    // A feed that saw the adapter running finishes before its memory goes.
+    while (__atomic_load_n(&g_feeding, __ATOMIC_ACQUIRE)) wa_port_sleep(1);
+    wa_port_lock();
+    RfuCore* core = g_core;
+    ParkedFrame* parked = g_parked;
+    uint8_t* out = g_out;
+    g_core = nullptr;
+    g_parked = nullptr;
+    g_out = nullptr;
+    wa_port_unlock();
+    delete core;
+    delete[] parked;
+    delete[] out;
+    wa_port_end();
+    g_started = false;
+}
+
 extern "C" bool wa_adapter_running(void) { return g_running; }
 
 extern "C" void wa_adapter_enter_mode(uint8_t role)
@@ -976,8 +1028,9 @@ extern "C" void wa_adapter_enter_mode(uint8_t role)
 
 extern "C" void wa_adapter_feed(const uint8_t* bytes, size_t length)
 {
-    if (!g_running) return;
-    g_parser.push(bytes, length);
+    __atomic_add_fetch(&g_feeding, 1, __ATOMIC_ACQ_REL);
+    if (g_running) g_parser.push(bytes, length);
+    __atomic_sub_fetch(&g_feeding, 1, __ATOMIC_ACQ_REL);
 }
 
 extern "C" void wa_adapter_recalibrate(void)
