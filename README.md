@@ -82,8 +82,9 @@ boards.
 
 1. **ESP32 board.** Plug it in, press *Install firmware*, then drop your `prod.keys` on
    the page.
-2. **GB-Link adapter.** Plug it in and install the wireless firmware. It connects to the
-   GBA with a Game Boy Color cable. Skip this for PC to Switch.
+2. **GB-Link adapter.** Plug it in and install the firmware the page offers (Ruby and
+   Sapphire need 3.0.0 or newer). It connects to the GBA with a Game Boy Color cable.
+   Skip this for PC to Switch.
 3. **Play.** Connect the boards with three wires (the page shows which pins) and power
    them from anything, or leave both on USB and press *Start* so the page carries the
    link.

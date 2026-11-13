@@ -13,7 +13,8 @@ directly.
 **GBA to Switch** (ESP32 board + GB-Link adapter)
 
 1. **ESP32 board:** install the firmware and drop your `prod.keys` on the page.
-2. **GB-Link adapter:** install the wireless adapter firmware.
+2. **GB-Link adapter:** install the firmware the page offers. Ruby and Sapphire need
+   firmware 3.0.0 or newer.
 3. **Play:** wire the boards together, or leave both on USB and let the page pass the
    traffic between them. For Ruby and Sapphire, pick them here: the page links the game
    by cable (the adapter's mode `0x01`) and translates that link into the Switch's
@@ -82,7 +83,8 @@ On Linux:
 
 - Add yourself to the serial group (`dialout`, or `uucp` on Arch).
 - The adapter needs udev rules for WebUSB. Run `scripts/setup-linux-permissions.sh`
-  from the GB-Link firmware repository.
+  from the GB-Link firmware repository, and run it again after updating the adapter to
+  firmware 3.0.0, which shows up as a different USB device.
 - If Chrome says the port was lost right after you used `esptool.py` or `idf.py`,
   unplug the board and plug it back in.
 

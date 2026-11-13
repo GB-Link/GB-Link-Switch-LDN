@@ -4,10 +4,10 @@
 // hint, at most one primary action.
 
 import { EspDevice, ESP_FILTERS, FAST_BAUD, newer, reopenPort, sleep } from './esp.js';
-import { GbLinkSerial, GbLinkUsb, BOOTROM_VENDOR_ID, GBLINK_VENDOR_ID } from './gblink.js';
+import { GbLinkSerial, GbLinkUsb, BOOTROM_VENDOR_ID, isGbLink } from './gblink.js';
 import { Bridge } from './bridge.js';
 import { CableSession } from './cable/session.js';
-import { CableLink } from './cable/cable.js';
+import { CableLink, PACKET_MS as CABLE_LINK_PACKET_MS } from './cable/cable.js';
 import { GbaEmulator } from './emu/emulator.js';
 import { EmulatorInput } from './emu/input.js';
 import { GameStore } from './emu/store.js';
@@ -776,7 +776,7 @@ async function rememberedAdapter() {
     if (state.askForAdapter) return null;
     let devices = [];
     try { devices = await navigator.usb.getDevices(); } catch {}
-    devices = devices.filter((device) => device.vendorId === GBLINK_VENDOR_ID);
+    devices = devices.filter((device) => isGbLink(device.vendorId, device.productId));
     return devices.length === 1 ? devices[0] : null;
 }
 
@@ -948,10 +948,10 @@ async function reconnectAdapter() {
         await sleep(700);
         let devices = [];
         try { devices = await navigator.usb.getDevices(); } catch {}
-        const device = devices.find((candidate) => candidate.vendorId === GBLINK_VENDOR_ID);
+        const device = devices.find((candidate) => isGbLink(candidate.vendorId, candidate.productId));
         let ports = [];
         try { ports = (await navigator.serial?.getPorts()) ?? []; } catch {}
-        const port = ports.find((candidate) => candidate.getInfo().usbVendorId === GBLINK_VENDOR_ID);
+        const port = ports.find((candidate) => isGbLink(candidate.getInfo().usbVendorId, candidate.getInfo().usbProductId));
         if (device || (port && attempt >= 3)) {
             await openAdapter(device ? new GbLinkUsb() : new GbLinkSerial(), device ?? port);
             state.install = null;
@@ -982,6 +982,9 @@ async function onAdapterFile(file) {
 
 // ---------------------------------------------------------------- play
 
+// The adapter's cable mode as Ruby and Sapphire use it, with the 2-4 player protocol
+const CABLE_FIRMWARE = '3.0.0';
+
 function bridgeBlocker() {
     if (state.trade) return 'This page is trading with the Switch itself. Disconnect there first.';
     if (state.celio?.running) return 'This page is linking with Celio. Leave that session first.';
@@ -989,7 +992,8 @@ function bridgeBlocker() {
     if (!state.esp?.attached) return 'Connect the ESP32 board in step 1.';
     if (!state.adapter) return 'Connect the adapter in step 2.';
     if (state.esp.info?.transport === 'UART' && state.esp.baudRate < FAST_BAUD) return 'This board’s firmware runs its console at 115200 baud, which cannot carry the link. Update it in step 1.';
-    if (state.game === 'cable' ? !state.adapterInfo?.version : !state.adapterInfo?.wireless) return 'The adapter needs the firmware from step 2.';
+    if (state.game === 'cable' && newer(CABLE_FIRMWARE, state.adapterInfo?.version ?? '0')) return `Ruby and Sapphire need the adapter’s firmware ${CABLE_FIRMWARE} or newer. Update it in step 2.`;
+    if (state.game !== 'cable' && !state.adapterInfo?.wireless) return 'The adapter needs the firmware from step 2.';
     if (!state.keys?.complete) return 'The board needs its keys from step 1.';
     return null;
 }
@@ -999,7 +1003,9 @@ async function onBridgeStart() {
     const cable = state.game === 'cable';
     const options = { bypassNationally: state.bypassNationally };
     const adapter = state.adapter;
-    const bridge = cable ? new CableSession(state.esp, (callbacks) => new CableLink(adapter, callbacks), options) : new Bridge(state.esp, adapter, options);
+    const bridge = cable
+        ? new CableSession(state.esp, (callbacks) => new CableLink(adapter, callbacks), { ...options, packetMs: CABLE_LINK_PACKET_MS })
+        : new Bridge(state.esp, adapter, options);
     await startBridge('gba', bridge, cable ? 'linking Ruby or Sapphire with the Switch' : 'carrying the link between the boards');
 }
 

@@ -90,11 +90,17 @@ public partial class MainWindow : Window
         var names = SerialPort.GetPortNames().Distinct();
         if (!OperatingSystem.IsWindows())
             names = names.Where(n => n.Contains("ttyACM") || n.Contains("ttyUSB") || n.Contains("cu.usb") || n.Contains("cu.SLAB") || n.Contains("cu.wchusb"));
-        if (OperatingSystem.IsLinux()) names = names.Where(n => UsbVendor(n) != GbLinkVendor);
+        if (OperatingSystem.IsLinux()) names = names.Where(n => !IsGbLink(n));
         return names.Order(StringComparer.OrdinalIgnoreCase).ToArray();
     }
-    private const string GbLinkVendor = "2fe3";
-    private static string? UsbVendor(string port)
+    // Firmware 3.0.0 and newer is 1209:b011, older firmware vendor 2fe3. Other projects share vendor 1209.
+    private static bool IsGbLink(string port) => UsbIds(port) switch
+    {
+        ("2fe3", _) => true,
+        ("1209", "b011") => true,
+        _ => false,
+    };
+    private static (string? Vendor, string? Product) UsbIds(string port)
     {
         try
         {
@@ -103,13 +109,16 @@ public partial class MainWindow : Window
             var directory = tty == null ? null : Directory.ResolveLinkTarget(Path.Combine(tty.FullName, "device"), true) as DirectoryInfo;
             for (int level = 0; directory != null && level < 4; level++, directory = directory.Parent)
             {
-                string file = Path.Combine(directory.FullName, "idVendor");
-                if (File.Exists(file)) return File.ReadAllText(file).Trim().ToLowerInvariant();
+                string vendor = Path.Combine(directory.FullName, "idVendor");
+                string product = Path.Combine(directory.FullName, "idProduct");
+                if (File.Exists(vendor))
+                    return (File.ReadAllText(vendor).Trim().ToLowerInvariant(),
+                            File.Exists(product) ? File.ReadAllText(product).Trim().ToLowerInvariant() : null);
             }
         }
         catch (IOException) { }
         catch (UnauthorizedAccessException) { }
-        return null;
+        return (null, null);
     }
     private void RefreshPortList()
     {

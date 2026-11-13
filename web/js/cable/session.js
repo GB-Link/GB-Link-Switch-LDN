@@ -11,7 +11,7 @@ const FRAME_MS = 1000 / 59.7275;
 
 export class CableSession extends EventTarget {
     // openCable(callbacks): the cable link to the game, given the translator's callbacks.
-    // packetMs: the cable's pace, when it is not a GB-Link's.
+    // packetMs: the cable's pace, one command each way per packet.
     constructor(esp, openCable, { bypassNationally = false, packetMs } = {}) {
         super();
         this.bypassNationally = bypassNationally;

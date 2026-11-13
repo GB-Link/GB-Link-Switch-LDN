@@ -1,24 +1,30 @@
-// The adapter's cable relay (mode 0x01) as the link master. The adapter clocks the GBA's cable
-// and runs the handshake; this side supplies player 0's commands and reads the game's.
+// The adapter's cable relay (mode 0x01, firmware 3.0.0 and newer) as the link's parent. The
+// game is player 1 of two: the adapter clocks its cable and runs the handshake, and this side
+// supplies player 0's commands and reads the game's.
 //
-// Data frames are 64 bytes both ways: four commands of eight 16-bit words (little-endian).
-// The adapter plays one queued command per cable packet and sends zeros when none is queued,
-// which the game reads as "no command". It reports the game's commands four packets at a time,
-// skipping batches that are all zero.
+// Commands travel as [seat, eight 16-bit words little-endian], 17 bytes. The adapter plays one
+// queued command per cable packet and sends zeros when none is queued, which the game reads as
+// "no command". It reports the game's commands three packets at a time (51 bytes), skipping
+// batches that are all zero.
 
 import { GB_CHANNEL } from '../wire.js';
 import { MODE_CABLE_LINK } from '../gblink.js';
 import { CMD_WORDS } from './translator.js';
 
 const STATUS = {
-    AWAIT_MODE: 0xff02, HANDSHAKE_RECEIVED: 0xff03, LINK_CONNECTED: 0xff05, RECONNECTING: 0xff06, CLOSED: 0xff07,
+    AWAIT_PLAYER_SETTINGS: 0xff02, HANDSHAKE_RECEIVED: 0xff03, LINK_CONNECTED: 0xff05, RECONNECTING: 0xff06, CLOSED: 0xff07,
 };
-const COMMAND = { SET_MODE_MASTER: 0x10, START_HANDSHAKE: 0x12, CONNECT_LINK: 0x13 };
+const COMMAND = { PLAYER_SETTINGS: 0x10, START_HANDSHAKE: 0x12, CONNECT_LINK: 0x13 };
+const PLAYERS = 2;
+const PAGE_SEAT = 0;
+const GAME_SEAT = 1;
 
-// The adapter's packet period as master: a checksum and eight words 1.378 ms apart, then a
-// 12.953 ms gap. Estimated slightly long, so the queue runs dry now and then rather than grow.
-const PACKET_MS = 26;
-const BATCH = 4;
+// The adapter's packet period as the parent: a checksum and eight words, about 16.5 ms from
+// its PIO program's timing. Estimated slightly long, so the queue runs dry now and then rather
+// than grow.
+export const PACKET_MS = 17;
+const WINDOW_BYTES = 1 + CMD_WORDS * 2;
+const BATCH = 3;               // commands per data frame, within one USB packet
 const AHEAD = 6;               // commands queued in the adapter at most
 const CONNECT_GRACE_MS = 150;  // slave handshakes before the master's
 const REOPEN_MS = 500;
@@ -69,8 +75,8 @@ export class CableLink {
         this.timeouts.add(t);
     }
 
-    command(byte) {
-        this.adapter.sendCommand([byte]).catch(() => {});
+    command(...bytes) {
+        this.adapter.sendCommand(bytes).catch(() => {});
     }
 
     setConnected(value) {
@@ -81,13 +87,13 @@ export class CableLink {
 
     onFrame(channel, payload) {
         if (channel === GB_CHANNEL.STATUS && payload.length >= 2) this.onStatus(payload[0] | (payload[1] << 8));
-        else if (channel === GB_CHANNEL.DATA && payload.length === BATCH * CMD_WORDS * 2) this.onData(payload);
+        else if (channel === GB_CHANNEL.DATA && payload.length > 0 && payload.length % WINDOW_BYTES === 0) this.onData(payload);
     }
 
     onStatus(status) {
         switch (status) {
-            case STATUS.AWAIT_MODE:
-                this.command(COMMAND.SET_MODE_MASTER);
+            case STATUS.AWAIT_PLAYER_SETTINGS:
+                this.command(COMMAND.PLAYER_SETTINGS, PLAYERS, GAME_SEAT);
                 break;
             case STATUS.HANDSHAKE_RECEIVED:
                 // The game opened its link. Only now may the handshake commands go out.
@@ -117,14 +123,14 @@ export class CableLink {
     }
 
     // Processed whenever running: the adapter sends a closing link's last commands before its
-    // status, over a separate endpoint.
+    // status, over a separate endpoint. Windows the adapter did not fill are all zero.
     onData(payload) {
-        for (let c = 0; c < BATCH; c++) {
+        for (let at = 0; at < payload.length; at += WINDOW_BYTES) {
+            if (payload[at] !== GAME_SEAT) continue;
             const words = [];
             let any = false;
             for (let i = 0; i < CMD_WORDS; i++) {
-                const at = (c * CMD_WORDS + i) * 2;
-                const word = payload[at] | (payload[at + 1] << 8);
+                const word = payload[at + 1 + i * 2] | (payload[at + 2 + i * 2] << 8);
                 words.push(word);
                 if (word) any = true;
             }
@@ -138,14 +144,15 @@ export class CableLink {
         const played = Math.floor((performance.now() - this.since) / PACKET_MS);
         if (this.sent < played) this.sent = played;
         while (this.sent - played + BATCH <= AHEAD) {
-            const batch = new Uint8Array(BATCH * CMD_WORDS * 2);
+            const batch = new Uint8Array(BATCH * WINDOW_BYTES);
             for (let c = 0; c < BATCH; c++) {
+                const at = c * WINDOW_BYTES;
+                batch[at] = PAGE_SEAT;
                 const words = this.nextCommand();
                 if (!words) continue;
                 for (let i = 0; i < CMD_WORDS; i++) {
-                    const at = (c * CMD_WORDS + i) * 2;
-                    batch[at] = words[i] & 0xff;
-                    batch[at + 1] = (words[i] >> 8) & 0xff;
+                    batch[at + 1 + i * 2] = words[i] & 0xff;
+                    batch[at + 2 + i * 2] = (words[i] >> 8) & 0xff;
                 }
             }
             this.adapter.sendData(batch).catch(() => {});

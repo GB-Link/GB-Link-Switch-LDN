@@ -4,8 +4,14 @@
 
 import { GB_CHANNEL, GbFrameParser, buildGbFrame } from './wire.js';
 
-export const GBLINK_VENDOR_ID = 0x2fe3;
+// Firmware 3.0.0 and newer enumerates as 1209:B011, older firmware as 2fe3. Several projects
+// share vendor 0x1209, so it only counts together with the product.
+const GBLINK_IDS = [{ vendorId: 0x1209, productId: 0xb011 }, { vendorId: 0x2fe3 }];
 export const BOOTROM_VENDOR_ID = 0x2e8a;
+
+export function isGbLink(vendorId, productId) {
+    return GBLINK_IDS.some((id) => id.vendorId === vendorId && (id.productId === undefined || id.productId === productId));
+}
 
 export const COMMAND = {
     SET_MODE: 0x00,
@@ -120,7 +126,10 @@ export class GbLinkSerial extends GbLinkBase {
     }
 
     static requestPort() {
-        return navigator.serial.requestPort({ filters: [{ usbVendorId: GBLINK_VENDOR_ID }] });
+        return navigator.serial.requestPort({
+            filters: GBLINK_IDS.map(({ vendorId, productId }) => (productId === undefined
+                ? { usbVendorId: vendorId } : { usbVendorId: vendorId, usbProductId: productId })),
+        });
     }
 
     async open(port) {
@@ -200,7 +209,7 @@ export class GbLinkUsb extends GbLinkBase {
     // Bootloader VID included so a board already in update mode can be picked.
     static requestDevice() {
         return navigator.usb.requestDevice({
-            filters: [{ vendorId: GBLINK_VENDOR_ID }, { vendorId: BOOTROM_VENDOR_ID }],
+            filters: [...GBLINK_IDS, { vendorId: BOOTROM_VENDOR_ID }],
         });
     }
 
