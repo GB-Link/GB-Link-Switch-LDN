@@ -245,6 +245,7 @@ ol.fine li { margin: 4px 0; }
 .choice { border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
 .choice p { margin: 0; font-size: 0.93rem; }
 .choice .fine { margin-top: 10px; }
+.choice .switcher { margin-top: 12px; }
 .choice .status { margin-top: 10px; font-size: 0.9rem; min-height: 0; }
 .choice .status:empty { display: none; }
 

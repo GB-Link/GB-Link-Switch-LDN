@@ -35,26 +35,29 @@ Emerald on a GBA against FireRed on a Switch. Photos by AngeloftheNight091.
 ## How it works
 
 The Switch's local wireless is a Wi-Fi network. An ESP32 board joins it the way a
-second Switch would. On the GBA side, a [GB-Link](https://github.com/GB-Link/GBLink-Firmware)
-adapter in the link port stands in for the Wireless Adapter. The two boards are
-connected with three wires (a Seeed Studio XIAO board plugs straight into the GB-Link's
-expansion socket), or both go on USB and the web page passes the traffic between them.
-The ESP32 board can also be the Wireless Adapter itself, with the GBA's link port wired
-to it and no GB-Link: see [`firmware/README.md`](firmware/README.md#wired-to-the-gba).
+second Switch would. On the GBA side, something has to stand in for the Wireless Adapter
+in the link port, and there are two ways to do it:
 
-![Game Boy Advance, link port, GB-Link adapter, three wires or USB through the page, ESP32 board, local wireless, Nintendo Switch running FireRed or LeafGreen](images/how-it-works.svg)
+- **A [GB-Link](https://github.com/GB-Link/GBLink-Firmware) adapter** in the link port,
+  with the ESP32 board in the GB-Link's expansion port, on three wires, or with both on
+  USB and the web page passing the traffic between them.
+- **The ESP32 board itself**, wired to a link cable. No GB-Link needed.
 
-![A Game Boy Advance with a GB-Link adapter in its link port, three wires to an ESP32 on a breadboard, a battery, and a Switch, both consoles at the trade table](images/GBAtoSwitchStandalone.jpg)
+![Game Boy Advance and Nintendo Switch, joined either through a GB-Link adapter and an ESP32 board, or through an ESP32 board wired to the link cable](images/how-it-works.svg)
 
-Standalone: the GB-Link in the link port, three wires to the ESP32, a battery, and no
-computer.
+Either way, once the board has its firmware and keys it needs no computer: see
+[Standalone](#standalone).
 
 ## What you need
 
-**GBA to Switch** needs an ESP32 board and a GB-Link adapter. **Play in your browser**,
-**PC to Switch** and **Mystery Gift** need only the ESP32 board.
+**GBA to Switch** needs an ESP32 board, and either a GB-Link adapter or a link cable wired
+to the board. **Play in your browser**, **PC to Switch** and **Mystery Gift** need only the
+ESP32 board.
 
-- An ESP32 board. The ESP32-S3 is the recommended one.
+- An ESP32 board. The recommended one is the
+  [Seeed Studio XIAO ESP32-C6 (pre-soldered)](https://www.seeedstudio.com/Seeed-Studio-XIAO-ESP32C6-Pre-Soldered-p-6328.html):
+  it plugs into the GB-Link USB V2's expansion port, has the memory to host four-player
+  battles, and switches between its onboard and external antennas by itself. These work:
 
   | Chip | Connects over |
   | --- | --- |
@@ -67,8 +70,10 @@ computer.
 - A Switch with FireRed or LeafGreen, and the `prod.keys` file from your Switch. The
   board needs four keys from it to talk to the Switch. The page sends them to the board
   over USB; nothing is uploaded anywhere.
-- For GBA to Switch: a GB-Link adapter, a **Game Boy Color link cable** (a Game Boy
-  Advance cable will not work) and a GBA with FireRed, LeafGreen or Emerald. Between
+- For GBA to Switch: a GBA with FireRed, LeafGreen or Emerald, and either a GB-Link
+  adapter with a **Game Boy Color link cable** (a Game Boy Advance cable will not work), or
+  a link cable to wire to the ESP32 board (see
+  [With only an ESP32 board](#with-only-an-esp32-board)). Between
   Emerald and the Switch's game, the games allow trades only once both players have
   entered the Hall of Fame and the Switch player has finished the Sevii Islands story
   (Cerulean Cave shows on its town map), just like between two GBAs. When the page
@@ -86,10 +91,9 @@ boards.
    the page.
 2. **GB-Link adapter.** Plug it in and install the firmware the page offers (Ruby and
    Sapphire need 3.0.0 or newer). It connects to the GBA with a Game Boy Color cable.
-   Skip this for PC to Switch.
-3. **Play.** Connect the boards with three wires (the page shows which pins), or plug a
-   XIAO board into the GB-Link's expansion socket, and power them from anything. Or leave
-   both on USB and press *Start* so the page carries the link.
+   Skip this for PC to Switch, or when the ESP32 board is wired to a link cable itself.
+3. **Play.** Play [standalone](#standalone), with no computer, or leave both boards on
+   USB and press *Start* so the page carries the link.
 
 On the Switch, go upstairs in a Pokémon Center to the Direct Corner, pick Trade Center
 or Colosseum and become the leader. On the GBA, pick the same thing and join the group.
@@ -103,6 +107,63 @@ Four-player multi battles work the same way, led from either side. A Switch can 
 with GBAs joining, or a GBA can lead with Switches joining; another GBA joins through its
 own board. With a GBA leading four players the game runs a little slower than with a
 Switch leading.
+
+### Standalone
+
+Once the board has its firmware and keys, no computer is needed. Power the board (and the
+GB-Link, if there is one) from a USB charger, a power bank or the Switch's own USB-C port,
+and play. The board works out by itself which of the two setups it is in. Ruby and
+Sapphire need the web page, so they are not played standalone.
+
+#### With a GB-Link USB V2
+
+Plug a Seeed Studio XIAO ESP32-C6 or ESP32-S3 into the GB-Link USB V2's expansion port.
+There is nothing to wire: the port powers the XIAO and links the two.
+
+| ![A Game Boy Advance and a Switch at the trade table, the GBA linked to a GB-Link USB V2 with a XIAO in its expansion port, powered from the Switch](images/gblinkplusESP32trade.jpg) | ![Close-up of the GB-Link USB V2 with the XIAO in its expansion port and the link cable plugged in](images/gblinktoESP32closeup.jpg) |
+| --- | --- |
+| Trading, with the GB-Link powered from the Switch | The XIAO in the GB-Link's expansion port |
+
+To give the board its firmware and keys, take it out of the port, or plug its own USB in
+before the GB-Link: a computer may not see a board that the GB-Link already powers.
+
+Other ESP32 boards connect to the GB-Link with three wires: the board's D9 to the
+GB-Link's GP9, D8 to GP8, and ground to ground (TX2 and RX2 on an original ESP32). The
+page's Play step shows the pins for your board and checks the wiring.
+
+#### With only an ESP32 board
+
+Without a GB-Link, the ESP32 board is the Wireless Adapter itself. Cut a link cable, keep
+the plug that goes into the GBA, and solder its wires to the board:
+
+![The link cable's pins 5, 3, 2 and 4 (SC, SI, SO, SD) go to a XIAO's D0, D1, D2 and D3, pin 6 to GND, pin 1 stays unconnected](images/standalone-pinout.svg)
+
+| Link cable plug | Line | XIAO | Original ESP32 |
+| --- | --- | --- | --- |
+| Pin 5 | SC, the clock | D0 | GPIO18 |
+| Pin 3 | SI, the GBA's input | D1 | GPIO21 |
+| Pin 2 | SO, the GBA's output | D2 | GPIO19 |
+| Pin 4 | SD, the GBA's reset line | D3 | GPIO22 |
+| Pin 6 | GND | GND | GND |
+| Pin 1 | 3.3 V | not connected | not connected |
+
+| ![A XIAO ESP32-S3 on the end of a cut link cable](images/ESP32DIY.jpg) | ![The back of the XIAO: the cable's four data wires on D0 to D3, and ground](images/ESPstandalonePinout.jpg) |
+| --- | --- |
+| A XIAO ESP32-S3 on a cut link cable | The wires on the back of the board |
+
+![The cable in a Game Boy Advance, the board powered from the Switch, both consoles in the Trade Center](images/ESP32Standalone.jpg)
+
+In the Trade Center, with the board powered from the Switch.
+
+- Wire colors differ between cables: match each wire to its pin with a continuity meter.
+- When direct wiring a spliced cable. Use a generic 6 pin GBC cable. A GBA cable will not work.
+- Leave pin 1 unconnected; the board runs from its own USB.
+- Keep the board off the link port when a Game Boy or Game Boy Color game is in: the port
+  then runs at 5 V, which the board's pins do not tolerate.
+- On the ESP32-C3 and C5, some of D0 to D3 are pins the chip reads as it starts. If such a
+  board does not start with the GBA connected, start it first and plug the cable in
+  afterwards.
+
 
 ### Ruby and Sapphire
 

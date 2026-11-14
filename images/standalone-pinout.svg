@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 400" width="800" height="400" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <!-- The plug that goes into the Game Boy Advance, pins as counted on it -->
+  <text x="160" y="30" fill="#8b949e" font-size="15" text-anchor="middle">Link cable: the plug that goes into the GBA</text>
+  <rect x="20" y="48" width="280" height="282" rx="12" fill="#7c8cff" stroke="#5b6ad0" stroke-width="1.5"/>
+  <g fill="#0b0d18" font-size="16" dominant-baseline="middle">
+    <text x="40" y="80"><tspan font-weight="700">Pin 6</tspan>  GND</text>
+    <text x="40" y="140"><tspan font-weight="700">Pin 5</tspan>  SC, the clock</text>
+    <text x="40" y="170"><tspan font-weight="700">Pin 3</tspan>  SI, the GBA's input</text>
+    <text x="40" y="200"><tspan font-weight="700">Pin 2</tspan>  SO, the GBA's output</text>
+    <text x="40" y="230"><tspan font-weight="700">Pin 4</tspan>  SD, the GBA's reset line</text>
+    <text x="40" y="295" fill="#2a2f55"><tspan font-weight="700">Pin 1</tspan>  3.3 V: not connected</text>
+  </g>
+  <g fill="#0b0d18">
+    <circle cx="292" cy="80" r="5"/>
+    <circle cx="292" cy="140" r="5"/>
+    <circle cx="292" cy="170" r="5"/>
+    <circle cx="292" cy="200" r="5"/>
+    <circle cx="292" cy="230" r="5"/>
+  </g>
+
+  <!-- Wires -->
+  <g fill="none" stroke="#f0883e" stroke-width="3" stroke-linejoin="round">
+    <polyline points="292,80 760,80 760,170 722,170"/>
+    <line x1="292" y1="140" x2="535" y2="140"/>
+    <line x1="292" y1="170" x2="535" y2="170"/>
+    <line x1="292" y1="200" x2="535" y2="200"/>
+    <line x1="292" y1="230" x2="535" y2="230"/>
+  </g>
+
+  <!-- Seeed Studio XIAO, top view, USB-C up -->
+  <rect x="590" y="94" width="60" height="22" rx="5" fill="#9ba3ad" stroke="#6e7681" stroke-width="1.5"/>
+  <rect x="520" y="110" width="200" height="230" rx="16" fill="#2d333b" stroke="#6e7681" stroke-width="1.5"/>
+  <g fill="#6e7681">
+    <circle cx="535" cy="260" r="7"/>
+    <circle cx="535" cy="290" r="7"/>
+    <circle cx="535" cy="320" r="7"/>
+    <circle cx="705" cy="140" r="7"/>
+    <circle cx="705" cy="200" r="7"/>
+    <circle cx="705" cy="230" r="7"/>
+    <circle cx="705" cy="260" r="7"/>
+    <circle cx="705" cy="290" r="7"/>
+    <circle cx="705" cy="320" r="7"/>
+  </g>
+  <g fill="#f0883e">
+    <circle cx="535" cy="140" r="8"/>
+    <circle cx="535" cy="170" r="8"/>
+    <circle cx="535" cy="200" r="8"/>
+    <circle cx="535" cy="230" r="8"/>
+    <circle cx="705" cy="170" r="8"/>
+  </g>
+  <g fill="#e6edf3" font-size="14" dominant-baseline="middle">
+    <g text-anchor="start">
+      <text x="552" y="140" font-weight="700">D0</text>
+      <text x="552" y="170" font-weight="700">D1</text>
+      <text x="552" y="200" font-weight="700">D2</text>
+      <text x="552" y="230" font-weight="700">D3</text>
+      <text x="552" y="260" fill="#9ba3ad">D4</text>
+      <text x="552" y="290" fill="#9ba3ad">D5</text>
+      <text x="552" y="320" fill="#9ba3ad">D6</text>
+    </g>
+    <g text-anchor="end">
+      <text x="688" y="140" fill="#9ba3ad">5V</text>
+      <text x="688" y="170" font-weight="700">GND</text>
+      <text x="688" y="200" fill="#9ba3ad">3V3</text>
+      <text x="688" y="230" fill="#9ba3ad">D10</text>
+      <text x="688" y="260" fill="#9ba3ad">D9</text>
+      <text x="688" y="290" fill="#9ba3ad">D8</text>
+      <text x="688" y="320" fill="#9ba3ad">D7</text>
+    </g>
+  </g>
+  <text x="620" y="362" fill="#8b949e" font-size="14" text-anchor="middle">Seeed Studio XIAO, top view</text>
+  <text x="400" y="390" fill="#8b949e" font-size="13" text-anchor="middle">Any XIAO (ESP32-C6, S3, C5 or C3). Original ESP32: SC GPIO18, SI GPIO21, SO GPIO19, SD GPIO22.</text>
+</svg>

@@ -38,6 +38,11 @@ const LINK_PIN_LABELS = {
     esp32c6: XIAO_LINK_LABELS,
     esp32s3: XIAO_LINK_LABELS,
 };
+// The board's own link-port pins, wired straight to a link cable: [SC, SI, SO, SD]. Every
+// XIAO has them on D0 to D3; the original ESP32 has no such labels.
+const PORT_PINS = { esp32: [18, 21, 19, 22], esp32c3: [2, 3, 4, 5], esp32c5: [1, 0, 25, 7], esp32c6: [0, 1, 2, 21], esp32s3: [1, 2, 3, 4] };
+const XIAO_PORT_LABELS = ['D0', 'D1', 'D2', 'D3'];
+const PORT_PIN_LABELS = { esp32c3: XIAO_PORT_LABELS, esp32c5: XIAO_PORT_LABELS, esp32c6: XIAO_PORT_LABELS, esp32s3: XIAO_PORT_LABELS };
 const KEY_NAMES = {
     kek: 'aes_kek_generation_source',
     gen: 'aes_key_generation_source',
@@ -105,6 +110,7 @@ const state = {
 
     resetLoop: false,       // adapter reports repeated resets by the game
     game: 'wireless',       // the GBA's game: wireless (FRLG, Emerald) | cable (Ruby, Sapphire)
+    standalone: 'gblink',   // standalone setup shown: gblink | board (the ESP32 wired to the cable)
     bypassNationally: false,   // skip the Kanto/Hoenn progress checks; not remembered, off on every visit
     bridge: null,           // Bridge, or CableSession for Ruby and Sapphire
     bridgePath: null,       // whose game it links: gba (the GB-Link's) | emu (the emulator's)
@@ -1081,9 +1087,10 @@ async function onWiringCheck() {
     if (!esp?.attached || state.bridge) return;
     const note = (text, tone) => { state.wiringNote = { text, tone }; render(); };
     note('Listening on the wires…');
+    let report = '';
     const frames = async () => {
-        const lines = await esp.command('LDN_PICO_STATS');
-        const match = lines.join(' ').match(/rx_frames=(\d+)/);
+        report = (await esp.command('LDN_PICO_STATS')).join(' ');
+        const match = report.match(/rx_frames=(\d+)/);
         return match ? Number(match[1]) : null;
     };
     const heard = async (milliseconds) => {
@@ -1092,14 +1099,20 @@ async function onWiringCheck() {
         const after = await frames();
         return before === null || after === null ? null : after > before;
     };
+    const xiao = state.esp?.info?.chip !== 'esp32';
+    const uartPins = xiao ? 'D8 and D9' : 'RX2 and TX2';
+    const portPins = xiao ? 'D0 to D3' : 'GPIO18, 19, 21 and 22';
     try {
         let result = await heard(2000);
-        if (result === false && state.session?.child !== '1') {
+        const onBoard = /LDN_PICO_ADAPTER board/.test(report);
+        if (result === false && !onBoard && state.session?.child !== '1') {
             await esp.command('LDN_PICO_MODE');
             result = await heard(1500);
         }
         if (result === null) note('The board did not report on its link.', 'warn');
-        else if (result) note('The board hears the adapter over the wires.', 'good');
+        else if (onBoard && /LDN_PICO_GBA active=1/.test(report)) note(`The board is the Wireless Adapter itself, and a Game Boy Advance on ${portPins} is talking to it.`, 'good');
+        else if (onBoard) note(`No GB-Link on ${uartPins}, so the board is the Wireless Adapter itself, on ${portPins}. A Game Boy Advance wired there shows up once its game turns the wireless on. With a GB-Link, check its wires, ground and power.`);
+        else if (result) note('The board hears the GB-Link over the wires.', 'good');
         else note('Nothing is arriving from the adapter. The two link wires may be the wrong way round: swap them and check again. Otherwise check ground, and that the adapter has power and the firmware from step 2.', 'bad');
     } catch (error) {
         note(describe(error), 'bad');
@@ -1439,6 +1452,15 @@ function chooseGame(game) {
     state.game = game;
     state.bridgeNote = null;
     remember(GAME_STORE, game);
+    render();
+}
+
+const STANDALONE_STORE = 'gblink-switch-standalone';
+
+function chooseStandalone(setup) {
+    if (!['gblink', 'board'].includes(setup) || setup === state.standalone) return;
+    state.standalone = setup;
+    remember(STANDALONE_STORE, setup);
     render();
 }
 
@@ -1996,7 +2018,7 @@ function renderGame() {
     $('bypass-panel').hidden = false;
     $('bypass-nationally').checked = state.bypassNationally;
     $('bypass-warning').hidden = !state.bypassNationally;
-    $('play-sub').textContent = cable ? 'Both boards on USB, with this page linking the game to the Switch.' : 'Let this page carry the link, or connect the two boards with three wires.';
+    $('play-sub').textContent = cable ? 'Both boards on USB, with this page linking the game to the Switch.' : 'Let this page carry the link, or play standalone with no computer.';
     $('play-standalone').hidden = cable;
     $('consoles-cable').hidden = !cable;
     $('consoles-wireless').hidden = cable;
@@ -2464,15 +2486,22 @@ function render() {
     $('adapter-bootsel').hidden = !state.adapter;
     drawSteps();
 
-    const pins = LINK_PINS[state.esp?.info?.chip];
-    const labels = LINK_PIN_LABELS[state.esp?.info?.chip];
-    const pin = (index) => `GPIO${pins[index]}${labels ? ` (${labels[index]})` : ''}`;
+    for (const button of $('standalone-setup').children) button.setAttribute('aria-pressed', String(button.dataset.setup === state.standalone));
+    $('standalone-gblink').hidden = state.standalone !== 'gblink';
+    $('standalone-board').hidden = state.standalone !== 'board';
+    const chip = state.esp?.info?.chip;
+    const pinName = (gpios, labels, index) => `GPIO${gpios[index]}${labels ? ` (${labels[index]})` : ''}`;
+    const pins = LINK_PINS[chip];
     $('wiring').hidden = Boolean(pins);
     $('wires').hidden = !pins;
     if (pins) {
-        $('wire-tx').textContent = pin(0);
-        $('wire-rx').textContent = pin(1);
+        $('wire-tx').textContent = pinName(pins, LINK_PIN_LABELS[chip], 0);
+        $('wire-rx').textContent = pinName(pins, LINK_PIN_LABELS[chip], 1);
     }
+    const port = PORT_PINS[chip];
+    $('port-wiring').hidden = Boolean(port);
+    $('port-wires').hidden = !port;
+    if (port) ['sc', 'si', 'so', 'sd'].forEach((line, index) => { $(`port-${line}`).textContent = pinName(port, PORT_PIN_LABELS[chip], index); });
     $('wiring-check').disabled = !state.esp?.attached || Boolean(state.bridge);
     setLine('wiring-status', state.wiringNote?.text, state.wiringNote?.tone);
 
@@ -2595,6 +2624,7 @@ function wireUp() {
     });
 
     $('play-game').addEventListener('click', (event) => chooseGame(event.target.closest('[data-game]')?.dataset.game));
+    $('standalone-setup').addEventListener('click', (event) => chooseStandalone(event.target.closest('[data-setup]')?.dataset.setup));
     $('bypass-nationally').addEventListener('change', (event) => setBypass(event.target.checked));
     $('celio-bypass').addEventListener('change', (event) => setBypass(event.target.checked));
     $('celio-create').addEventListener('click', () => celioEnter(false));
@@ -2706,6 +2736,7 @@ async function start() {
     renderPaths();
     state.source = remembered(SOURCE_STORE) === 'party' ? 'party' : 'pool';
     state.game = remembered(GAME_STORE) === 'cable' ? 'cable' : 'wireless';
+    state.standalone = remembered(STANDALONE_STORE) === 'board' ? 'board' : 'gblink';
     state.celioServer = remembered(CELIO_STORE) ?? CELIO_SERVER;
     state.giftEvent = remembered(GIFT_STORE);
     state.poolServer = remembered(SERVER_STORE) || POOL_SERVER;

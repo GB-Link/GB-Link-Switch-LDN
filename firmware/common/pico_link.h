@@ -54,6 +54,9 @@ uint32_t pico_link_mode_sent(void);
 bool pico_link_await_mode(void);
 bool pico_link_wrong_cable(void);
 bool pico_link_gba_active(void);
+/* Which adapter carries the link: this board's own, on its link-port pins (true), or a
+   GB-Link on the UART pins (false). */
+bool pico_link_on_board(void);
 /* How long ago the GBA last looked for a group to join, in ms (INT64_MAX before it has);
    -1 when its adapter does not report searches (GB-Link firmware without the reports, or
    a host-port client that sends none). */

@@ -11,7 +11,9 @@ need this page.
 
 ## Boards
 
-One firmware builds for five chips. The ESP32-S3 is the recommended one. Every chip uses
+One firmware builds for five chips. The
+[Seeed Studio XIAO ESP32-C6](https://www.seeedstudio.com/Seeed-Studio-XIAO-ESP32C6-Pre-Soldered-p-6328.html)
+is the recommended one. Every chip uses
 the pins of a Seeed Studio XIAO, so any XIAO fits the same wiring: D8 and D9 for a
 GB-Link, D0 to D3 for the GBA's link port.
 
@@ -34,7 +36,7 @@ Studio XIAO ESP32-C5 has no onboard antenna: attach its external one.
 
 ## With a GB-Link
 
-Plug a XIAO into the GB-Link's expansion socket, or wire D8 to the GB-Link's GP8, D9 to
+Plug a XIAO into the GB-Link USB V2's expansion port, or wire D8 to the GB-Link's GP8, D9 to
 its GP9 and ground to ground. The board finds the GB-Link on its own, whichever of the two
 powers up first, and the GB-Link becomes the adapter. To use the board's USB as well (its
 console, or the web page), plug that in before the GB-Link: a computer may not see a board
@@ -47,7 +49,10 @@ them in software until the next restart.
 
 Without a GB-Link, wire the GBA's link port to D0 to D3 and the board is the wireless
 adapter. Count the pins at the plug that goes into the GBA. A link cable crosses SO and
-SI between its two ends.
+SI between its two ends. The [main README](../README.md#with-only-an-esp32-board) has
+photos of a XIAO on a cut link cable and notes on which cables work.
+
+![The link cable's pins 5, 3, 2 and 4 (SC, SI, SO, SD) go to a XIAO's D0, D1, D2 and D3, pin 6 to GND, pin 1 stays unconnected](../images/standalone-pinout.svg)
 
 | GBA link port | Line | XIAO | Original ESP32 |
 | --- | --- | --- | --- |
@@ -66,8 +71,9 @@ SI between its two ends.
 - Opening or closing the USB console can reset the board, and the adapter with it: a GBA
   using the adapter at that moment gets a link error. Keep the page connected through a
   session.
-- The original ESP32 has the least memory: wired to the GBA, hosting a room (GBA leads)
-  may not fit.
+- The XIAO ESP32-C6 has the most memory for this setup. On an original ESP32, hosting a
+  room (GBA leads) may not fit; on an ESP32-S3, hosting a four-player battle has not been
+  tried yet.
 - The ESP32-C3 and C5 have not been tried wired to a GBA yet. On both, some of D0 to D3
   are pins the chip reads as it starts. If the board does not start with the GBA
   connected, start it first and plug the cable in afterwards.

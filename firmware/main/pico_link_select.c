@@ -141,6 +141,7 @@ void pico_link_start(void)
     PART(start)();
 }
 
+bool pico_link_on_board(void) { return s_decided && !s_gblink; }
 bool pico_link_set_port(pico_port_t port) { return PART(set_port)(port); }
 pico_port_t pico_link_port(void) { return PART(port)(); }
 void pico_link_feed_host(const uint8_t *bytes, size_t length) { PART(feed_host)(bytes, length); }
