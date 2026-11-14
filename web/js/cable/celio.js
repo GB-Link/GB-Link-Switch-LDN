@@ -29,9 +29,8 @@ import { RfuLeader } from './leader.js';
 import { GB_CHANNEL, GbFrameParser } from '../wire.js';
 import { FrameReader, RFU, clientFrame, command, toGbFrames } from '../trade/adapter.js';
 
-// The server with the 2-4 player protocol. The one at celio-server.up.railway.app still
-// speaks the earlier, two-player one.
-export const CELIO_SERVER = 'wss://celio-server-staging.up.railway.app';
+// The server with the 2-4 player Celio protocol.
+export const CELIO_SERVER = 'wss://celio-server.up.railway.app';
 
 const STATUS = { AWAIT_PLAYER_SETTINGS: 0xff02, HANDSHAKE_RECEIVED: 0xff03, LINK_CONNECTED: 0xff05, LINK_RECONNECTING: 0xff06, LINK_CLOSED: 0xff07 };
 const COMMAND = { PLAYER_SETTINGS: 0x10, START_HANDSHAKE: 0x12, CONNECT_LINK: 0x13 };
