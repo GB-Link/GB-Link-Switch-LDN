@@ -251,6 +251,10 @@
             </div>
 
             <div class="emu-game" id="emu-game" hidden>
+                <div class="emu-view">
+                    <button type="button" class="emu-icon" id="emu-sound" aria-label="Sound" aria-pressed="true" title="Sound: on"></button>
+                    <button type="button" class="emu-icon" id="emu-full" aria-label="Full screen" title="Full screen"></button>
+                </div>
                 <div class="emu-screen"><canvas id="emu-screen" width="240" height="160" aria-label="Game screen"></canvas></div>
                 <div class="emu-touch" id="emu-touch" aria-hidden="true">
                     <div class="emu-shoulders">
@@ -274,14 +278,19 @@
                         <div class="emu-key emu-pill" data-key="START">START</div>
                     </div>
                 </div>
-                <div class="actions emu-toolbar">
-                    <button type="button" class="emu-keep" id="emu-sound">Sound on</button>
-                    <button type="button" class="emu-keep" id="emu-full">Full screen</button>
+                <div class="emu-toolbar">
                     <button type="button" id="emu-save">Save file <span class="emu-unsaved" id="emu-unsaved" title="The game saved since its save file was last downloaded" hidden></span></button>
                     <button type="button" id="emu-load-save">Load a save</button>
                     <button type="button" id="emu-reset">Reset</button>
                     <button type="button" id="emu-change">Change game</button>
                     <input type="file" id="emu-save-file" accept=".sav" hidden>
+                </div>
+                <div id="emu-link-kind" hidden>
+                    <p class="fine">This ROM doesn't say which game it is. Choose the games it links like; the game then starts over from its last save.</p>
+                    <div class="switcher" id="emu-link-kind-choice" role="group" aria-label="The games this ROM links like">
+                        <button type="button" data-link="wireless" aria-pressed="true">FireRed, LeafGreen, Emerald</button>
+                        <button type="button" data-link="cable" aria-pressed="false">Ruby, Sapphire</button>
+                    </div>
                 </div>
                 <p class="fine emu-keys">Arrow keys move. X is A, Z is B, A and S are L and R, Enter is Start and Space is Select. A gamepad works too.</p>
             </div>

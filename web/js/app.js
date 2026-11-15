@@ -11,7 +11,7 @@ import { CableLink, PACKET_MS as CABLE_LINK_PACKET_MS } from './cable/cable.js';
 import { GbaEmulator } from './emu/emulator.js';
 import { EmulatorInput } from './emu/input.js';
 import { GameStore } from './emu/store.js';
-import { identifyRom, knownRom } from './emu/roms.js';
+import { describeRom, identifyRom } from './emu/roms.js';
 import { EmulatedAdapter } from './emu/wireless.js';
 import { EmulatedCable, PACKET_MS } from './emu/cable.js';
 import { CELIO_SERVER, CelioSession } from './cable/celio.js';
@@ -115,7 +115,7 @@ const state = {
     bridge: null,           // Bridge, or CableSession for Ruby and Sapphire
     bridgePath: null,       // whose game it links: gba (the GB-Link's) | emu (the emulator's)
     emu: null,              // the emulator, once a game has been chosen: { emulator, input, adapter }
-    emuGame: null,          // the game it plays: a known ROM (roms.js)
+    emuGame: null,          // the game it plays: a ROM as roms.js describes it
     emuRom: null,           // its bytes
     emuKept: [],            // the games kept in this browser (store.js)
     emuUnsaved: false,      // the game saved since its save file was last downloaded
@@ -674,7 +674,7 @@ function wirelessView(status, w) {
 // Ruby or Sapphire: the board finds and joins the Switch's room; the page joins the group
 // once the game has linked on the cable.
 function cableView(cable, status, w) {
-    const game = w.cable ?? state.emuGame?.game ?? 'Ruby or Sapphire';
+    const game = w.cable ?? state.emuGame?.game ?? state.emuGame?.title ?? 'Ruby or Sapphire';
     if (cable.linked) return { headline: `${game} and the Switch are linked.`, hint: `Leave the room on ${w.both} when you are done; the board then gets ready for the next one.`, tone: 'good' };
     if (!status || status.state === 'scan') return { headline: 'Looking for the Switch’s room…', hint: 'On the Switch, open the Trade Center or the Colosseum in the Direct Corner as the group leader.', tone: '' };
     if (status.state !== 'run') return { headline: 'Joining the Switch’s room…', hint: '', tone: '' };
@@ -1151,14 +1151,15 @@ function startSound() {
     emulator.enableAudio().catch(() => {});
 }
 
-// Starts a game from its ROM and the save to start from (null for none).
+// Starts a game from its ROM and the save to start from (null for none). Returns whether it started.
 async function emuPlay(rom, game, save, unsaved) {
-    if (state.emuStarting) return;
+    if (state.emuStarting) return false;
     if (state.bridgePath === 'emu') {
         state.emuNote = { text: 'Stop the link in step 3 before changing the game or its save.', tone: 'warn' };
         renderEmu();
-        return;
+        return false;
     }
+    let started = false;
     state.emuStarting = true;
     state.emuNote = null;
     renderEmu();
@@ -1172,20 +1173,24 @@ async function emuPlay(rom, game, save, unsaved) {
         emulator.attachCanvas($('emu-screen'));
         emulator.start();
         startSound();
-        await gameStore.put({ id: game.crc, title: game.title, name: game.name, rom, save, unsaved });
+        await gameStore.put({ id: game.crc, title: game.title, name: game.name, link: game.link, rom, save, unsaved });
         state.emuKept = await gameStore.list();
         log('emulator', `playing ${game.title}${game.link === 'cable' ? ', linked by cable' : ''}`);
+        started = true;
     } catch (error) {
         state.emuNote = { text: describe(error), tone: 'bad' };
     } finally {
         state.emuStarting = false;
         render();
     }
+    return started;
 }
 
-// A battery save from a file, or null with a note when it is not one.
-async function readSave(file) {
+// A battery save from a file for a game, or null with a note when it is not one. Only the known
+// cartridge dumps are held to their 128 KB; any other ROM takes its save as it is.
+async function readSave(file, game) {
     const bytes = new Uint8Array(await file.arrayBuffer());
+    if (!game.known) return bytes.length ? bytes : null;
     if (bytes.length < SAVE_SIZE) {
         state.emuNote = { text: `${file.name} is not a save of these games: they keep 128 KB.`, tone: 'bad' };
         return null;
@@ -1197,8 +1202,8 @@ async function readSave(file) {
 // save kept for it here.
 async function onEmuFiles(files) {
     const list = [...(files ?? [])];
-    const romFile = list.find((file) => /\.gba$/i.test(file.name));
     const saveFile = list.find((file) => /\.(sav|srm)$/i.test(file.name));
+    const romFile = list.find((file) => file !== saveFile && !/\.(sav|srm)$/i.test(file.name));
     if (!romFile && !saveFile) return;
     state.emuNote = null;
     if (!romFile) {
@@ -1208,39 +1213,49 @@ async function onEmuFiles(files) {
         return;
     }
     const rom = new Uint8Array(await romFile.arrayBuffer());
-    const check = identifyRom(rom);
-    if (!check.ok) {
-        state.emuNote = { text: check.message, tone: 'bad' };
-        renderEmu();
-        return;
-    }
+    const { rom: game, notice } = identifyRom(rom, romFile.name);
+    const kept = await gameStore.get(game.crc);
+    if (game.linkChoice && kept?.link) game.link = kept.link;
     let save = null, unsaved = false;
     if (saveFile) {
-        save = await readSave(saveFile);
+        save = await readSave(saveFile, game);
         if (!save) { renderEmu(); return; }
-    } else {
-        const kept = await gameStore.get(check.rom.crc);
-        if (kept?.save) ({ save, unsaved } = kept);
+    } else if (kept?.save) {
+        ({ save, unsaved } = kept);
     }
-    await emuPlay(rom, check.rom, save, unsaved);
+    if (await emuPlay(rom, game, save, unsaved) && notice) {
+        state.emuNote = { text: notice, tone: 'warn' };
+        renderEmu();
+    }
 }
 
 // The game starts over from another save.
 async function emuLoadSave(file) {
-    const save = await readSave(file);
-    if (!save || !state.emuGame) return;
+    if (!state.emuGame) return;
+    const save = await readSave(file, state.emuGame);
+    if (!save) return;
     await emuPlay(state.emuRom, state.emuGame, save, false);
+}
+
+// A ROM whose header names none of the games links the way the player chooses. The games look
+// for the Wireless Adapter as they start, so the game starts over from its last save.
+async function emuChooseLink(link) {
+    const game = state.emuGame;
+    if (!game?.linkChoice || !state.emu || !['wireless', 'cable'].includes(link) || link === game.link) return;
+    state.emu.emulator.checkSave();
+    await emuPlay(state.emuRom, { ...game, link }, state.emu.emulator.getSave(), state.emuUnsaved);
 }
 
 async function emuPlayKept(id) {
     const kept = await gameStore.get(id);
-    const game = knownRom(id);
-    if (!kept || !game) {
+    if (!kept) {
         state.emuNote = { text: 'This game is no longer kept in the browser. Choose its ROM again.', tone: 'warn' };
         state.emuKept = await gameStore.list();
         renderEmu();
         return;
     }
+    const game = describeRom(id, kept.rom, kept.name);
+    if (game.linkChoice && kept.link) game.link = kept.link;
     await emuPlay(kept.rom, game, kept.save, kept.unsaved);
 }
 
@@ -1271,9 +1286,8 @@ function emuDownloadSave() {
 
 async function emuDownloadKept(id) {
     const kept = await gameStore.get(id);
-    const game = knownRom(id);
-    if (!kept?.save || !game) return;
-    downloadSave(game, kept.save);
+    if (!kept?.save) return;
+    downloadSave(kept, kept.save);
     await gameStore.markDownloaded(id);
     state.emuKept = await gameStore.list();
     renderEmu();
@@ -1332,6 +1346,26 @@ function renderEmuKept() {
     }));
 }
 
+// The game's sound and full screen buttons are icons, with a label for screen readers.
+const svgIcon = (body) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
+const SPEAKER = '<path d="M4 9h4l5-4v14l-5-4H4z"/>';
+const EMU_ICONS = {
+    soundOn: svgIcon(`${SPEAKER}<path d="M16.5 9a4 4 0 0 1 0 6M19 6.5a7.5 7.5 0 0 1 0 11"/>`),
+    soundOff: svgIcon(`${SPEAKER}<path d="M17 9.5l5 5M22 9.5l-5 5"/>`),
+    enterFull: svgIcon('<path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/>'),
+    exitFull: svgIcon('<path d="M9 4v5H4M20 9h-5V4M15 20v-5h5M4 15h5v5"/>'),
+};
+
+// Redrawn only when it changes, so a click on the icon isn't lost to a redraw under it.
+function setIcon(button, icon, label, title) {
+    if (button.dataset.icon !== icon) {
+        button.innerHTML = EMU_ICONS[icon];
+        button.dataset.icon = icon;
+    }
+    button.setAttribute('aria-label', label);
+    button.title = title;
+}
+
 function renderEmu() {
     const game = state.emuGame;
     const linking = state.bridgePath === 'emu';
@@ -1342,9 +1376,17 @@ function renderEmu() {
     $('emu-sub').textContent = game
         ? `${game.title}. ${game.link === 'cable' ? 'It has no wireless: this page links it by cable and turns that link into the Switch\'s wireless.' : 'It plays with a Wireless Adapter plugged in.'}`
         : 'Pokémon Ruby, Sapphire, Emerald, FireRed or LeafGreen, dumped from your own cartridge, in any language.';
-    $('emu-sound').textContent = state.emuMuted ? 'Sound off' : 'Sound on';
-    $('emu-full').textContent = state.emuFull ? 'Exit full screen' : 'Full screen';
+    setIcon($('emu-sound'), state.emuMuted ? 'soundOff' : 'soundOn', 'Sound', state.emuMuted ? 'Sound: off' : 'Sound: on');
+    $('emu-sound').setAttribute('aria-pressed', String(!state.emuMuted));
+    const fullLabel = state.emuFull ? 'Exit full screen' : 'Full screen';
+    setIcon($('emu-full'), state.emuFull ? 'exitFull' : 'enterFull', fullLabel, fullLabel);
     $('emu-unsaved').hidden = !state.emuUnsaved;
+    $('emu-link-kind').hidden = !game?.linkChoice;
+    for (const button of $('emu-link-kind-choice').children) {
+        button.setAttribute('aria-pressed', String(button.dataset.link === game?.link));
+        button.disabled = linking || state.emuStarting;
+        button.title = linking ? 'Stop the link in step 3 first.' : '';
+    }
     for (const id of ['emu-load-save', 'emu-reset', 'emu-change']) {
         $(id).disabled = linking;
         $(id).title = linking ? 'Stop the link in step 3 first.' : '';
@@ -2692,6 +2734,7 @@ function wireUp() {
     });
     $('emu-reset').addEventListener('click', (event) => twice(event.currentTarget, 'Click again to switch the game off and on', () => state.emu?.emulator.reset()));
     $('emu-change').addEventListener('click', emuChangeGame);
+    $('emu-link-kind-choice').addEventListener('click', (event) => emuChooseLink(event.target.closest('[data-link]')?.dataset.link));
     $('emu-link-start').addEventListener('click', onEmuLinkStart);
     $('emu-link-stop').addEventListener('click', () => stopBridge());
     $('emu-bypass').addEventListener('change', (event) => setBypass(event.target.checked));

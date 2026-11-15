@@ -8,8 +8,8 @@ const GAMES = 'games';
 // ROM bytes are kept apart so listing the games doesn't read them
 const ROMS = 'roms';
 
-// A kept game: { id (the ROM's CRC-32), title, name, save, unsaved (saved since its save was
-// last downloaded), addedAt, playedAt }.
+// A kept game: { id (the ROM's CRC-32), title, name, link (how it links: 'wireless' or 'cable'),
+// save, unsaved (saved since its save was last downloaded), addedAt, playedAt }.
 export class GameStore {
     constructor() {
         this.queue = Promise.resolve();
@@ -82,7 +82,7 @@ export class GameStore {
     }
 
     // Keeps a game that was just started (its ROM is stored once).
-    put({ id, title, name, rom, save, unsaved }) {
+    put({ id, title, name, link, rom, save, unsaved }) {
         return this.write(async () => {
             try {
                 const now = Date.now();
@@ -91,7 +91,7 @@ export class GameStore {
                     games.get(id).onsuccess = (event) => {
                         const old = event.target.result;
                         if (!old) tx.objectStore(ROMS).put(rom.slice().buffer, id);
-                        games.put({ id, title, name, save, unsaved, addedAt: old?.addedAt ?? now, playedAt: now });
+                        games.put({ id, title, name, link, save, unsaved, addedAt: old?.addedAt ?? now, playedAt: now });
                     };
                 });
                 return true;

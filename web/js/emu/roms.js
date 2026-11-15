@@ -1,7 +1,7 @@
-// The games the emulator plays: Ruby, Sapphire, Emerald, FireRed and LeafGreen in every
-// language and revision, recognized by the CRC-32 of the whole ROM so only clean cartridge
-// dumps are taken. FireRed, LeafGreen and Emerald link through the wireless adapter; Ruby and
-// Sapphire have none and link by cable.
+// The games the emulator links: Ruby, Sapphire, Emerald, FireRed and LeafGreen in every
+// language and revision, recognized by the CRC-32 of the whole ROM. Any ROM plays; these name
+// the game and tell the player when it may not link. FireRed, LeafGreen and Emerald link
+// through the wireless adapter; Ruby and Sapphire have none and link by cable.
 
 const GAMES = { AXV: 'Ruby', AXP: 'Sapphire', BPE: 'Emerald', BPR: 'FireRed', BPG: 'LeafGreen' };
 const LANGUAGES = { J: 'Japanese', E: 'English', F: 'French', D: 'German', I: 'Italian', S: 'Spanish' };
@@ -66,6 +66,7 @@ const KNOWN = new Map(DUMPS.map(([crc, code, revision, name]) => {
         crc, code, revision, name, game, language,
         title: language === 'English' ? `Pokémon ${game}` : `Pokémon ${game} (${language})`,
         link: CABLE_GAMES.has(game) ? 'cable' : 'wireless',
+        known: true, linkChoice: false,
     }];
 }));
 
@@ -85,21 +86,41 @@ export function crc32(bytes) {
     return ((c ^ 0xffffffff) >>> 0).toString(16).padStart(8, '0');
 }
 
-/** A known dump by its CRC-32: { crc, code, revision, name, game, language, title, link }. */
+/** A known dump by its CRC-32: { crc, code, revision, name, game, language, title, link, known }. */
 export function knownRom(crc) {
     return KNOWN.get(crc) ?? null;
 }
 
-/** The game a ROM file is: { ok: true, rom } or { ok: false, message }. */
-export function identifyRom(bytes) {
-    const rom = knownRom(crc32(bytes));
-    if (rom) return { ok: true, rom };
+/** A ROM file's name without its extension, for naming a ROM that isn't a known dump. */
+export function romFileName(fileName) {
+    return fileName.replace(/\.(gba|agb|bin)$/i, '').trim() || 'Game';
+}
+
+/**
+ * The game a ROM is, by its CRC-32: a known dump, or one named `name` that links like the game
+ * its header names. `linkChoice`: its header names none of the games, so the player chooses how
+ * it links.
+ */
+export function describeRom(crc, bytes, name) {
+    const known = knownRom(crc);
+    if (known) return known;
     const code = bytes.length >= 0xb0 ? String.fromCharCode(...bytes.subarray(0xac, 0xb0)) : '';
     const game = GAMES[code.slice(0, 3)];
     return {
-        ok: false,
-        message: game
-            ? `This Pokémon ${game} ROM doesn't match a cartridge dump. Use a clean dump of your own cartridge.`
-            : 'This isn\'t a Pokémon Ruby, Sapphire, Emerald, FireRed or LeafGreen ROM.',
+        crc, code, name, game, language: LANGUAGES[code[3]], title: name,
+        link: CABLE_GAMES.has(game) ? 'cable' : 'wireless',
+        known: false, linkChoice: !game,
     };
+}
+
+/** The game a ROM file is, and what the player should know about it: { rom, notice }. */
+export function identifyRom(bytes, fileName) {
+    const rom = describeRom(crc32(bytes), bytes, romFileName(fileName));
+    let notice = null;
+    if (!rom.known) {
+        notice = rom.game
+            ? `This Pokémon ${rom.game} ROM isn't a known cartridge dump. It plays, but linking may not work.`
+            : 'This isn\'t a known Pokémon Ruby, Sapphire, Emerald, FireRed or LeafGreen ROM. It plays, but linking may not work.';
+    }
+    return { rom, notice };
 }

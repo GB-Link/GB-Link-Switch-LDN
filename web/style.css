@@ -348,10 +348,30 @@ footer p { color: var(--muted); font-size: 0.82rem; }
     display: block; width: 100%; height: auto; aspect-ratio: 3 / 2;
     image-rendering: pixelated; background: #000; border-radius: 10px;
 }
-.emu-toolbar { margin-top: 0; }
+/* Sound and full screen: icons in the card's title row, left of its dot. */
+#emu-card { position: relative; }
+#emu-card:has(#emu-game:not([hidden])) .card-head > div::before { content: ""; float: right; width: 80px; height: 36px; }
+.emu-view { position: absolute; top: 17px; right: 42px; display: flex; gap: 4px; }
+.emu-icon {
+    display: inline-grid; place-items: center;
+    width: 36px; height: 36px; padding: 0;
+    border: 0; border-radius: 8px; background: none; color: var(--muted);
+}
+.emu-icon:hover:not(:disabled) { background: var(--panel-2); color: var(--text); }
+.emu-icon[aria-pressed="true"] { color: var(--accent); }
+.emu-icon svg { width: 20px; height: 20px; }
+/* Save file, Load a save, Reset and Change game: four in a row, two on a phone. */
+.emu-toolbar { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.emu-toolbar button { padding-left: 8px; padding-right: 8px; }
+@media (max-width: 560px) {
+    .emu-toolbar { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 .emu-keys { margin-top: 0; }
 .emu-unsaved { display: inline-block; width: 8px; height: 8px; margin-left: 4px; border-radius: 50%; background: var(--warn); vertical-align: middle; }
-.emu-touch { display: none; gap: 12px; user-select: none; -webkit-user-select: none; touch-action: none; }
+/* The page scrolls from the space between the touch controls; a touch on a button, the d-pad or
+   A and B plays instead. */
+.emu-touch { display: none; gap: 12px; user-select: none; -webkit-user-select: none; touch-action: pan-y; }
+.emu-key, .emu-dpad, .emu-ab { touch-action: none; }
 .emu-key {
     display: grid; place-items: center;
     font-weight: 600; font-size: 1.1rem; color: var(--text);
@@ -376,24 +396,36 @@ footer p { color: var(--muted); font-size: 0.82rem; }
     .emu-keys { display: none; }
 }
 
-/* Full screen: the picture as large as it fits, the buttons below. */
+/* Full screen: only the picture, as large as it fits at its own shape, with the two icons in a
+   corner. Touch screens keep their controls. Nothing scrolls. */
 .emu-game.full {
     position: fixed; inset: 0; z-index: 100;
     margin: 0; padding: 8px;
     background: #000;
-    align-content: center; justify-items: center;
+    display: flex; flex-direction: column; gap: 8px;
+    touch-action: none;
 }
-.emu-game.full .emu-screen { width: min(100%, calc((100dvh - 80px) * 1.5)); }
-.emu-game.full .emu-keys { display: none; }
-.emu-game.full .emu-toolbar > :not(.emu-keep) { display: none; }
+.emu-game.full .emu-toolbar, .emu-game.full .emu-keys, .emu-game.full #emu-link-kind { display: none; }
+.emu-game.full .emu-view { position: static; align-self: flex-end; }
+.emu-game.full .emu-icon { color: #fff; }
+.emu-game.full .emu-icon:hover { background: rgba(255, 255, 255, 0.15); }
+.emu-game.full .emu-screen { flex: 1; min-height: 0; width: 100%; }
+.emu-game.full .emu-screen canvas { width: 100%; height: 100%; aspect-ratio: auto; object-fit: contain; border-radius: 0; }
+/* No touch controls: the icons in a column at the top right, beside the picture. */
+@media not all and (pointer: coarse) {
+    .emu-game.full { padding-left: 52px; padding-right: 52px; }
+    .emu-game.full .emu-view { position: absolute; top: 8px; right: 8px; flex-direction: column; }
+}
+/* Upright: the icons above the picture, the controls in the middle of the space below it. */
 @media (pointer: coarse) {
-    .emu-game.full .emu-screen { width: min(100%, calc((100dvh - 330px) * 1.5)); }
-    .emu-game.full .emu-touch { width: 100%; max-width: 512px; }
+    .emu-game.full .emu-screen { flex: 0 1 auto; aspect-ratio: 3 / 2; }
+    .emu-game.full .emu-touch { flex: 1 0 auto; align-content: center; width: 100%; max-width: 512px; margin: 0 auto; }
 }
-/* Held sideways: the picture as tall as it fits, the buttons either side of it as on a GBA. */
+/* Held sideways: the picture as tall as it fits between the controls, as on a GBA, the icons above it. */
 @media (pointer: coarse) and (orientation: landscape) {
-    .emu-game.full .emu-screen { width: min(calc(100vw - 336px), calc((100dvh - 64px) * 1.5)); }
-    .emu-game.full .emu-touch { position: fixed; inset: 12px; width: auto; max-width: none; display: block; pointer-events: none; }
+    .emu-game.full { padding-left: 152px; padding-right: 152px; }
+    .emu-game.full .emu-screen { flex: 1 1 0; aspect-ratio: auto; }
+    .emu-game.full .emu-touch { position: fixed; inset: 12px; width: auto; max-width: none; margin: 0; display: block; pointer-events: none; }
     .emu-game.full .emu-touch .emu-key { pointer-events: auto; }
     .emu-game.full .emu-shoulders, .emu-game.full .emu-pad, .emu-game.full .emu-menu { position: absolute; left: 0; right: 0; justify-content: space-between; align-items: center; }
     .emu-game.full .emu-shoulders { top: 0; }
